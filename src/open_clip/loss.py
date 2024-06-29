@@ -214,7 +214,61 @@ class DistillClipLoss(ClipLoss):
             return {"contrastive_loss": contrastive_loss, "distill_loss": distill_loss}
 
         return contrastive_loss, distill_loss
+class VideoDistillClipLoss(ClipLoss):
 
+    def dist_loss(self, teacher_visual_features, student_visual_features):
+        """
+        Calculate token-wise distillation loss between teacher and student features.
+    
+        Args:
+        teacher_visual_features: Tensor of shape [B, 1568, 768]
+        student_visual_features: Tensor of shape [B, 1568, 1024]
+    
+        Returns:
+        Average KL divergence loss across the batch.
+        """
+        # Normalize the features by the square root of the feature dimension, directly using values
+        teacher_norm = (teacher_visual_features.shape[-1] ** 0.5)
+        student_norm = (student_visual_features.shape[-1] ** 0.5)
+    
+        # Compute similarity matrices and apply softmax
+        t_sim = torch.bmm(teacher_visual_features, teacher_visual_features.transpose(1, 2)) / teacher_norm
+        s_sim = torch.bmm(student_visual_features, student_visual_features.transpose(1, 2)) / student_norm
+    
+        t_distribution = F.softmax(t_sim, dim=-1)
+        s_distribution = F.softmax(s_sim, dim=-1)
+    
+        # Calculate KL divergence for each sample in the batch
+        kl_loss = 0.001 * F.kl_div(torch.log(t_distribution), s_distribution, reduction='batchmean')
+    
+        return kl_loss
+        
+
+    def forward(
+            self,
+            image_features,
+            spatio_temporal_video_features,
+            text_features,
+            logit_scale,
+            dist_image_features,
+            output_dict=False,
+    ):
+        logits_per_image, logits_per_text = \
+            self.get_logits(image_features, text_features, logit_scale)
+
+        labels = self.get_ground_truth(image_features.device, logits_per_image.shape[0])
+
+        contrastive_loss = (
+            F.cross_entropy(logits_per_image, labels) +
+            F.cross_entropy(logits_per_text, labels)
+        ) / 2
+
+        distill_loss = self.dist_loss(teacher_visual_features=dist_image_features,student_visual_features=spatio_temporal_video_features)
+
+        if output_dict:
+            return {"contrastive_loss": contrastive_loss, "distill_loss": distill_loss}
+
+        return contrastive_loss, distill_loss
 
 def neighbour_exchange(from_rank, to_rank, tensor, group=None):
     tensor_recv = torch.zeros_like(tensor)

@@ -452,6 +452,12 @@ def parse_args(args):
         action="store_true",
         help='Use SigLip (sigmoid) loss.'
     )
+    parser.add_argument(
+        "--num-frames",
+        type=int,
+        default=16,
+        help='Number of uniformly sampled frames'
+    )
 
     args = parser.parse_args(args)
 
