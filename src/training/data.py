@@ -513,8 +513,6 @@ def preprocess_sample(args,sample,preprocess_img,t_preprocess_img,tokenizer):
         'text': text
     }
 
-
-
 def get_wds_video_retrieval_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokenizer=None):
     t_preprocess_img =  AutoImageProcessor.from_pretrained("MCG-NJU/videomae-base")
     input_shards = args.train_data if is_train else args.val_data
@@ -589,6 +587,141 @@ def get_wds_video_retrieval_dataset(args, preprocess_img, is_train, epoch=0, flo
 
         ),
         wds.to_tuple("video", "t_video", "text"),
+        wds.batched(args.batch_size, partial=not is_train)
+    ])
+
+    dataset = wds.DataPipeline(*pipeline)
+
+    if is_train:
+        if not resampled:
+            num_shards = num_shards or len(expand_urls(input_shards)[0])
+            assert num_shards >= args.workers * args.world_size, 'number of shards must be >= total workers'
+        # roll over and repeat a few samples to get same number of full batches on each node
+        round_fn = math.floor if floor else math.ceil
+        global_batch_size = args.batch_size * args.world_size
+        num_batches = round_fn(num_samples / global_batch_size)
+        num_workers = max(1, args.workers)
+        num_worker_batches = round_fn(num_batches / num_workers)  # per dataloader worker
+        num_batches = num_worker_batches * num_workers
+        num_samples = num_batches * global_batch_size
+        dataset = dataset.with_epoch(num_worker_batches)  # each worker is iterating over this
+    else:
+        # last batches are partial, eval is done on single (master) node
+        num_batches = math.ceil(num_samples / args.batch_size)
+
+    dataloader = wds.WebLoader(
+        dataset,
+        batch_size=None,
+        shuffle=False,
+        num_workers=args.workers,
+        persistent_workers=args.workers > 0,
+    )
+
+    # FIXME not clear which approach is better, with_epoch before vs after dataloader?
+    # hoping to resolve via https://github.com/webdataset/webdataset/issues/169
+    # if is_train:
+    #     # roll over and repeat a few samples to get same number of full batches on each node
+    #     global_batch_size = args.batch_size * args.world_size
+    #     num_batches = math.ceil(num_samples / global_batch_size)
+    #     num_workers = max(1, args.workers)
+    #     num_batches = math.ceil(num_batches / num_workers) * num_workers
+    #     num_samples = num_batches * global_batch_size
+    #     dataloader = dataloader.with_epoch(num_batches)
+    # else:
+    #     # last batches are partial, eval is done on single (master) node
+    #     num_batches = math.ceil(num_samples / args.batch_size)
+
+    # add meta-data to dataloader instance for convenience
+    dataloader.num_batches = num_batches
+    dataloader.num_samples = num_samples
+
+    return DataInfo(dataloader=dataloader, shared_epoch=shared_epoch)
+
+def preprocess_mae_sample(args,sample,preprocess_img,t_preprocess_img,tokenizer):
+    texts = json.loads(sample['text'].decode('utf-8'))
+    text = process_text(texts=texts,tokenizer=tokenizer)
+    sample["pth"] = torch.load(io.BytesIO(sample["pth"]),map_location='cpu')
+    clip_video_input = sample["pth"]["clip_video_input"]
+    mae_video_features = sample["pth"]["mae_video_features"]
+    return{
+        'clip_video_input':clip_video_input,
+        'mae_video_features':mae_video_features,
+        'text': text
+    }
+
+def get_wds_video_retrieval_preprocess_mae_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokenizer=None):
+    t_preprocess_img =  AutoImageProcessor.from_pretrained("MCG-NJU/videomae-base")
+    input_shards = args.train_data if is_train else args.val_data
+    assert input_shards is not None
+    resampled = getattr(args, 'dataset_resampled', False) and is_train
+
+    num_shards = None
+    if is_train:
+        if args.train_num_samples is not None:
+            num_samples = args.train_num_samples
+        else:
+            num_samples, num_shards = get_dataset_size(input_shards)
+            if not num_samples:
+                raise RuntimeError(
+                    'Currently, the number of dataset samples must be specified for the training dataset. '
+                    'Please specify it via `--train-num-samples` if no dataset length info is present.')
+    else:
+        # Eval will just exhaust the iterator if the size is not specified.
+        num_samples = args.val_num_samples or 0 
+
+    shared_epoch = SharedEpoch(epoch=epoch)  # create a shared epoch store to sync epoch to dataloader worker proc
+
+    if is_train and args.train_data_upsampling_factors is not None:
+        assert resampled, "--train_data_upsampling_factors is only supported when sampling with replacement (with --dataset-resampled)."
+    
+    if resampled:
+        pipeline = [ResampledShards2(
+            input_shards,
+            weights=args.train_data_upsampling_factors,
+            deterministic=True,
+            epoch=shared_epoch,
+        )]
+    else:
+        pipeline = [wds.SimpleShardList(input_shards)]
+
+    # at this point we have an iterator over all the shards
+    if is_train:
+        if not resampled:
+            pipeline.extend([
+                detshuffle2(
+                    bufsize=_SHARD_SHUFFLE_SIZE,
+                    initial=_SHARD_SHUFFLE_INITIAL,
+                    seed=args.seed,
+                    epoch=shared_epoch,
+                ),
+                wds.split_by_node,
+                wds.split_by_worker,
+            ])
+        pipeline.extend([
+            # at this point, we have an iterator over the shards assigned to each worker at each node
+            tarfile_to_samples_nothrow,  # wds.tarfile_to_samples(handler=log_and_continue),
+            wds.shuffle(
+                bufsize=_SAMPLE_SHUFFLE_SIZE,
+                initial=_SAMPLE_SHUFFLE_INITIAL,
+            ),
+        ])
+    else:
+        pipeline.extend([
+            wds.split_by_worker,
+            # at this point, we have an iterator over the shards assigned to each worker
+            wds.tarfile_to_samples(handler=log_and_continue),
+        ])
+
+    pipeline.extend([
+        # wds.decode("pilrgb", handler=log_and_continue),
+        wds.rename(video="mp4", text="json", pth="pth"),
+        wds.map(
+            lambda sample: preprocess_mae_sample(args=args, sample=sample, \
+                                             preprocess_img=preprocess_img, \
+                                                t_preprocess_img=t_preprocess_img, \
+                                                    tokenizer=tokenizer)
+        ),
+        wds.to_tuple("clip_video_input", "mae_video_features", "text"),
         wds.batched(args.batch_size, partial=not is_train)
     ])
 
@@ -722,7 +855,8 @@ def get_synthetic_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None
 def get_dataset_fn(data_path, dataset_type):
     if dataset_type == "webdataset":
         # return get_wds_dataset
-        return get_wds_video_retrieval_dataset
+        # return get_wds_video_retrieval_dataset
+        return get_wds_video_retrieval_preprocess_mae_dataset
     elif dataset_type == "csv":
         return get_csv_dataset
     elif dataset_type == "synthetic":

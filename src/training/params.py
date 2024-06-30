@@ -458,6 +458,12 @@ def parse_args(args):
         default=16,
         help='Number of uniformly sampled frames'
     )
+    parser.add_argument(
+        "--distill-alpha",
+        type=float,
+        default=0.001,
+        help='Hypermeter for weight of KL loss'
+    )
 
     args = parser.parse_args(args)
 

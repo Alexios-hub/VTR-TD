@@ -250,7 +250,9 @@ def main(args):
 
     if args.distill:
         # FIXME: currently assumes the model you're distilling from has the same tokenizer & transforms.
-        dist_model = VideoMAEModel.from_pretrained(args.distill_pretrained).to(device)
+        dist_model = None
+        # dist_model = VideoMAEModel.from_pretrained(args.distill_pretrained).to(device)
+
         # dist_model, _, _ = create_model_and_transforms(
         #     args.distill_model, 
         #     args.distill_pretrained,
@@ -308,7 +310,7 @@ def main(args):
             ddp_args['static_graph'] = True
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args)
     
-        if args.distill:
+        if args.distill and dist_model is not None:
             dist_model = torch.nn.parallel.DistributedDataParallel(dist_model, device_ids=[device], **ddp_args)
 
     # create optimizer and scaler

@@ -253,7 +253,7 @@ def train_video_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler
     input_dtype = get_input_dtype(args.precision)
 
     model.train()
-    if args.distill:
+    if args.distill and dist_model is not None:
         dist_model.eval()
 
     data['train'].set_epoch(epoch)  # set epoch in process safe manner via sampler or shared_epoch
@@ -275,9 +275,9 @@ def train_video_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler
         if not args.skip_scheduler:
             scheduler(step)
 
-        images, t_images, texts = batch #images=[B,num_frames,...]
-
-        t_images = t_images.to(device=device, non_blocking=True)
+        # images, t_images, texts = batch 
+        images, mae_videos_features, texts = batch
+        mae_videos_features = mae_videos_features.to(device=device, dtype=input_dtype, non_blocking=True).detach()
         images = images.to(device=device, dtype=input_dtype, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
 
@@ -289,10 +289,10 @@ def train_video_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler
                 model_out = model(images, texts)
                 logit_scale = model_out["logit_scale"]
                 if args.distill:
-                    with torch.no_grad():
-                        t_image_features = dist_model(pixel_values=t_images).last_hidden_state
-                    model_out['dist_image_features'] = t_image_features
-                losses = loss(**model_out, output_dict=True)
+                    # with torch.no_grad():
+                    #     t_image_features = dist_model(pixel_values=t_images).last_hidden_state
+                    model_out['dist_image_features'] = mae_videos_features
+                losses = loss(**model_out, args=args, output_dict=True)
 
                 total_loss = sum(losses.values())
                 losses["loss"] = total_loss

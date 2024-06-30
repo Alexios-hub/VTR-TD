@@ -216,7 +216,7 @@ class DistillClipLoss(ClipLoss):
         return contrastive_loss, distill_loss
 class VideoDistillClipLoss(ClipLoss):
 
-    def dist_loss(self, teacher_visual_features, student_visual_features):
+    def dist_loss(self, args, teacher_visual_features, student_visual_features):
         """
         Calculate token-wise distillation loss between teacher and student features.
     
@@ -239,13 +239,14 @@ class VideoDistillClipLoss(ClipLoss):
         s_distribution = F.softmax(s_sim, dim=-1)
     
         # Calculate KL divergence for each sample in the batch
-        kl_loss = 0.001 * F.kl_div(torch.log(t_distribution), s_distribution, reduction='batchmean')
+        kl_loss = args.distill_alpha * F.kl_div(torch.log(t_distribution), s_distribution, reduction='batchmean')
     
         return kl_loss
         
 
     def forward(
             self,
+            args,
             image_features,
             spatio_temporal_video_features,
             text_features,
@@ -263,7 +264,7 @@ class VideoDistillClipLoss(ClipLoss):
             F.cross_entropy(logits_per_text, labels)
         ) / 2
 
-        distill_loss = self.dist_loss(teacher_visual_features=dist_image_features,student_visual_features=spatio_temporal_video_features)
+        distill_loss = self.dist_loss(args=args, teacher_visual_features=dist_image_features,student_visual_features=spatio_temporal_video_features)
 
         if output_dict:
             return {"contrastive_loss": contrastive_loss, "distill_loss": distill_loss}
