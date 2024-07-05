@@ -10,9 +10,9 @@ torchrun --nproc_per_node 2 -m \
     --train-num-samples 9000 \
     --val-data="/home/user/data/MSRVTT-videos/test_t_umt_preframes/test_{0..1}.tar"  \
     --val-num-samples 1000 \
-    --warmup 1000 \
-    --batch-size=256 \
-    --lr=1e-3 \
+    --warmup 0 \
+    --batch-size=128 \
+    --lr=1e-4 \
     --wd=0.1 \
     --epochs 32 \
     --workers=2 \
@@ -22,8 +22,8 @@ torchrun --nproc_per_node 2 -m \
     --distill-pretrained l16_25m \
     --num-frames 4 \
     --distill-st-alpha 1.0 \
-    --distill-ckd-alpha 0.0 \
-    --distill-temporal-alpha 0.0 \
-    --distill-text-fd-alpha 0.0 \
+    --distill-ckd-alpha 1.0 \
+    --distill-temporal-alpha 1.0 \
+    --distill-text-fd-alpha 10.0 \
 
 

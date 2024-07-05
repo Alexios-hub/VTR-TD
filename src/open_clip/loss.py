@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-
+import math
 try:
     import torch.distributed.nn
     from torch import distributed as dist
@@ -214,7 +214,46 @@ class DistillClipLoss(ClipLoss):
             return {"contrastive_loss": contrastive_loss, "distill_loss": distill_loss}
 
         return contrastive_loss, distill_loss
+
+
+class MyOrthogonal(nn.Module):
+    def __init__(self, ds, dt):
+        super(MyOrthogonal, self).__init__()
+        self.ds = ds
+        self.dt = dt
+        self.weight = nn.Parameter(torch.empty((dt, dt)))
+        torch.nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+
+    def forward(self, x):
+        # Enforce skew-symmetry
+        W = (self.weight - self.weight.T) / 2
+        A = torch.linalg.matrix_exp(W)
+        P = A[:, 0:self.ds]
+        y = F.linear(x, P)
+        return y
+    
+
 class VideoDistillClipLoss(ClipLoss):
+
+    def __init__(
+            self,
+            local_loss=False,
+            gather_with_grad=False,
+            cache_labels=False,
+            rank=0,
+            world_size=1,
+            use_horovod=False,
+    ):
+        super().__init__(
+            local_loss,
+            gather_with_grad,
+            cache_labels,
+            rank,
+            world_size,
+            use_horovod
+        )
+        self.visual_proj = MyOrthogonal(768,1024)
+        self.text_proj = MyOrthogonal(768,1024)
 
     def dist_loss(self, args, dist_features, s_image_features, s_text_features , s_video_token_features, s_logits_per_image, s_logits_per_text):
         """
@@ -237,7 +276,7 @@ class VideoDistillClipLoss(ClipLoss):
         Average KL divergence loss across the batch.
         """
         B = s_image_features.shape[0]
-        # spatio-temporal loss
+        # # spatio-temporal loss
         # # Normalize the features by the square root of the feature dimension, directly using values
         # teacher_norm = (dist_features['t_image_feats'].shape[-1] ** 0.5)
         # student_norm = (s_video_token_features.shape[-1] ** 0.5)
@@ -259,6 +298,11 @@ class VideoDistillClipLoss(ClipLoss):
         # st_loss = args.distill_st_alpha * F.kl_div(torch.log(t_distribution), s_distribution, reduction='batchmean') / (B)
         st_loss = args.distill_st_alpha * (-(t_sim.softmax(dim=-1) * s_sim.log_softmax(dim=-1)).sum(dim=-1).mean(dim=1).mean(dim=0))
 
+        # st loss with fd
+        # st_loss = args.distill_st_alpha * F.mse_loss(dist_features['t_image_feats'],self.visual_proj(s_video_token_features))
+
+
+
         #ckd loss
         t_logits_per_image, t_logits_per_text = \
             self.get_logits(dist_features['t_visual_projs'], dist_features['t_text_projs'], 1.0)
@@ -268,9 +312,8 @@ class VideoDistillClipLoss(ClipLoss):
 
         # #temporal_relation_loss
         # # Compute correlation matrices
-
-        # t_corr_matrix = torch.bmm(dist_features['t_pooled_image_feats'], dist_features['t_pooled_image_feats'].transpose(1, 2))
-        # s_corr_matrix = torch.bmm(s_image_features, s_image_features.transpose(1, 2))
+        # t_corr_matrix = torch.bmm(dist_features['t_pooled_image_feats'], dist_features['t_pooled_image_feats'].transpose(1, 2)) / teacher_norm
+        # s_corr_matrix = torch.bmm(s_image_features, s_image_features.transpose(1, 2)) / student_norm
         # # Apply softmax to get distributions
         # t_distribution = F.softmax(t_corr_matrix, dim=-1)
         # s_distribution = F.softmax(s_corr_matrix, dim=-1)
@@ -287,6 +330,8 @@ class VideoDistillClipLoss(ClipLoss):
         # Normalize by the number of elements in the distribution
         # t_loss = args.distill_temporal_alpha * F.kl_div(torch.log(t_distribution), s_distribution, reduction='batchmean') / (B)
         t_loss = args.distill_temporal_alpha *(-(t_corr_matrix.softmax(dim=-1) * s_corr_matrix.log_softmax(dim=-1)).sum(dim=-1).mean(dim=1).mean(dim=0))
+
+        # t_loss = args.distill_temporal_alpha * F.mse_loss(dist_features['t_visual_projs'], s_image_features)
 
         #text_fd_loss
         text_fd_loss = args.distill_text_fd_alpha * F.mse_loss(s_text_features, dist_features['t_text_projs'])

@@ -504,7 +504,7 @@ class VideoCLIP(nn.Module):
         for param in clip_2d.parameters():
             param.requires_grad = False
         self.clip_2d = clip_2d
-        encoder_layer = nn.TransformerEncoderLayer(d_model=768,dim_feedforward=768*2,nhead=8,batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=768,nhead=8,batch_first=True)
         self.encoder = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=4)
         self.position_embeddings = get_sinusoid_encoding_table(n_position=4*196,d_hid=768)
         self.pool_norm = nn.LayerNorm(768)
