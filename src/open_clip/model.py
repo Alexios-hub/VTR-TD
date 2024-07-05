@@ -232,8 +232,10 @@ class CLIP(nn.Module):
             init_logit_bias: Optional[float] = None,
             cast_dtype: Optional[torch.dtype] = None,
             output_dict: bool = False,
+            text_output_tokens = False
     ):
         super().__init__()
+        self.text_output_tokens = text_output_tokens
         self.output_dict = output_dict
 
         self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
@@ -265,6 +267,9 @@ class CLIP(nn.Module):
         self.transformer.grad_checkpointing = enable
 
     def encode_image(self, image, normalize: bool = False):
+        if self.visual.output_tokens == True:
+            features, token_features = self.visual(image)
+            return (F.normalize(features, dim=-1), token_features) if normalize else (features, token_features)
         features = self.visual(image)
         return F.normalize(features, dim=-1) if normalize else features
 
@@ -276,12 +281,15 @@ class CLIP(nn.Module):
         x = x + self.positional_embedding.to(cast_dtype)
         x = self.transformer(x, attn_mask=self.attn_mask)
         x = self.ln_final(x)  # [batch_size, n_ctx, transformer.width]
-        x, _ = text_global_pool(x, text, self.text_pool_type)
+        # x, _ = text_global_pool(x, text, self.text_pool_type)
+        x, tokens = text_global_pool(x, text, self.text_pool_type)
         if self.text_projection is not None:
             if isinstance(self.text_projection, nn.Linear):
                 x = self.text_projection(x)
             else:
                 x = x @ self.text_projection
+        if self.text_output_tokens:
+            return (F.normalize(x, dim=-1),tokens) if normalize else (x,tokens)
 
         return F.normalize(x, dim=-1) if normalize else x
 
@@ -356,8 +364,8 @@ class CustomTextCLIP(nn.Module):
         self.text.set_grad_checkpointing(enable)
 
     def encode_image(self, image, normalize: bool = False):
-        features, backbone_features = self.visual(image)
-        return (F.normalize(features, dim=-1),  backbone_features) if normalize else (features, backbone_features)
+        features = self.visual(image)
+        return F.normalize(features, dim=-1) if normalize else features
 
     def encode_text(self, text, normalize: bool = False):
         features = self.text(text)
@@ -377,13 +385,12 @@ class CustomTextCLIP(nn.Module):
             image: Optional[torch.Tensor] = None,
             text: Optional[torch.Tensor] = None,
     ):
-        image_features, backbone_features = self.encode_image(image, normalize=True) if image is not None else None
+        image_features = self.encode_image(image, normalize=True) if image is not None else None
         text_features = self.encode_text(text, normalize=True) if text is not None else None
 
         if self.output_dict:
             out_dict = {
                 "image_features": image_features,
-                "image_patch_features": backbone_features,
                 "text_features": text_features,
                 "logit_scale": self.logit_scale.exp()
             }
@@ -469,27 +476,18 @@ class CustomTextCLIP(nn.Module):
 #             raise NotImplementedError('only support return dict.')
 
 
+class MLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(MLP, self).__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.gelu = nn.GELU()
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
 
-class TemporalEmbedding(nn.Module):
-    def __init__(
-            self
-    ):
-        super().__init__()
-        self.upsampler = nn.Upsample(size=(14, 14), mode='bilinear', align_corners=True)
-        self.proj = nn.Conv3d(in_channels=1024,out_channels=1024,kernel_size=(2, 1, 1),stride=(2, 1, 1))
-
-    def forward(self, frame_features):
-        """
-        frame_features:[B,num_frames,C,H,W]
-        """
-        B,num_frames,C,H,W = frame_features.shape#B,16,1024,8,8
-        frame_features = frame_features.reshape(B*num_frames,C,H,W)
-        frame_features = self.upsampler(frame_features)
-        _,C,H,W = frame_features.shape#B*16,1024,14,14
-        frame_features = frame_features.reshape(B,num_frames,C,H,W).permute(0,2,1,3,4)#[B,C,num_frames,H,W]
-        temporal_emb = self.proj(frame_features)#[B,C,num_frames/2,H,W]
-        temporal_emb = temporal_emb.permute(0,2,3,4,1).reshape(B,-1,C)#[B,1568,1024]
-        return temporal_emb
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.gelu(x)
+        x = self.fc2(x)
+        return x
 
 
 
@@ -506,12 +504,11 @@ class VideoCLIP(nn.Module):
         for param in clip_2d.parameters():
             param.requires_grad = False
         self.clip_2d = clip_2d
-        self.temporal_emb = TemporalEmbedding()
-        encoder_layer = nn.TransformerEncoderLayer(d_model=1024,nhead=8,batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
-        self.position_embeddings = get_sinusoid_encoding_table(n_position=8*14*14,d_hid=1024)
-        self.linear_proj = nn.Linear(in_features=1024,out_features=512,bias=False)
-        self.text_proj = nn.Linear(in_features=512,out_features=512)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=768,dim_feedforward=768*2,nhead=8,batch_first=True)
+        self.encoder = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=4)
+        self.position_embeddings = get_sinusoid_encoding_table(n_position=4*196,d_hid=768)
+        self.pool_norm = nn.LayerNorm(768)
+        self.text_proj = MLP(input_dim=512,hidden_dim=512*2,output_dim=768)
 
 
     def forward(
@@ -522,22 +519,28 @@ class VideoCLIP(nn.Module):
         """
         video:shape=[B,num_frames,C,H,W]
         """
-        B,num_frames,C,H,W = video.shape
+        B,T,C,H,W = video.shape#[B,4,3,224,224]
         with torch.no_grad():
-            video = video.reshape(B*num_frames,C,H,W)
+            video = video.reshape(B*T,C,H,W)
             out_dict = self.clip_2d(video, text)
-            out_dict['image_features'] = out_dict['image_features'].reshape(B,num_frames,-1)
-            C,H,W = out_dict['image_patch_features'].shape[1:]
-            out_dict['image_patch_features'] = out_dict['image_patch_features'].reshape(B,num_frames,C,H,W)#[B,16,1024,8,8]
-        patch_embeddings = self.temporal_emb(out_dict['image_patch_features']) + self.position_embeddings.type_as(out_dict['image_patch_features']).to(out_dict['image_patch_features'].device).clone().detach()#[B,num_frames/2*H*W,C]
-        spatio_temporal_video_features = self.encoder(patch_embeddings)#[B,num_frames/2*H*W,C]
-        avg_global_features = torch.mean(out_dict['image_features'], dim=1)#(B,512)
-        spatio_temporal_video_features_avg = torch.mean(self.linear_proj(spatio_temporal_video_features),dim=1)
-        visual_features = F.normalize(avg_global_features + spatio_temporal_video_features_avg,dim=-1)
+            if isinstance(out_dict['image_features'],tuple):
+                out_dict.update({
+                    'image_features':out_dict['image_features'][0],#[B*T,512]
+                    'tokens':out_dict['image_features'][1]#[B*T,196,768]
+                })
+            # out_dict['image_features'] = out_dict['image_features'].view(B,T,-1)
+            _, L, D = out_dict['tokens'].shape
+            out_dict['tokens'] = out_dict['tokens'].reshape(B, T*L, D)
+            
+        token_embeddings = out_dict['tokens'] + self.position_embeddings.type_as(out_dict['tokens']).to(out_dict['tokens'].device).clone().detach()#[B,num_frames/2*H*W,C]
+        video_token_features = self.encoder(token_embeddings)#[B,4*196,D=768]
+        pooled_video_token_features = self.pool_norm(video_token_features.reshape(B,T,L,D).mean(2))#在patch维求了平均值但保留了时序[B,T,768]
+
+
         text_features = F.normalize(self.text_proj(out_dict['text_features']),dim=-1)
         output = {}
-        output['spatio_temporal_video_features'] = spatio_temporal_video_features
-        output['image_features'] = visual_features
+        output['image_features'] = pooled_video_token_features
+        output['video_token_features'] = video_token_features
         output['text_features'] = text_features
         output['logit_scale'] = self.logit_scale.exp()
         return output

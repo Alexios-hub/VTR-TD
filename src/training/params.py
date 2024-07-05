@@ -459,10 +459,28 @@ def parse_args(args):
         help='Number of uniformly sampled frames'
     )
     parser.add_argument(
-        "--distill-alpha",
+        "--distill-st-alpha",
         type=float,
-        default=0.001,
-        help='Hypermeter for weight of KL loss'
+        default=1.0,
+        help="spatio temporal retation distillation loss alpha"
+    )
+    parser.add_argument(
+        "--distill-ckd-alpha",
+        type=float,
+        default=1.0,
+        help="contrastive logits distillation loss"
+    )
+    parser.add_argument(
+        "--distill-temporal-alpha",
+        type=float,
+        default=1.0,
+        help="temporal relation distillation loss"
+    )
+    parser.add_argument(
+        "--distill-text-fd-alpha",
+        type=float,
+        default=1.0,
+        help="text feature distillation loss"
     )
 
     args = parser.parse_args(args)

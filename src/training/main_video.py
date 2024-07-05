@@ -38,8 +38,7 @@ from training.scheduler import cosine_lr, const_lr, const_lr_cooldown
 from training.train import evaluate, train_video_one_epoch
 from training.file_utils import pt_load, check_exists, start_sync_process, remote_sync
 
-from transformers import VideoMAEModel
-
+from torchvision import transforms
 LATEST_CHECKPOINT_NAME = "epoch_latest.pt"
 
 
@@ -241,6 +240,27 @@ def main(args):
         output_dict=True,
         **model_kwargs,
     )
+    assert model_org.visual.output_tokens == False
+    model_org.visual.output_tokens = True
+    preprocess_val = transforms.Compose([
+        transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
+        transforms.CenterCrop((224, 224)),
+        transforms.ConvertImageDtype(torch.float),
+        transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+        ])
+    preprocess_train = transforms.Compose([
+        transforms.RandomResizedCrop(
+            size=(224, 224),
+            scale=(0.9, 1.0),
+            ratio=(0.75, 1.3333),
+            interpolation=transforms.InterpolationMode.BICUBIC
+        ),
+        transforms.ConvertImageDtype(torch.float),  # 确保是float类型，适用于归一化
+        transforms.Normalize(
+            mean=[0.48145466, 0.4578275, 0.40821073],
+            std=[0.26862954, 0.26130258, 0.27577711]
+        )
+        ])
 
     
     model = VideoCLIP(
@@ -444,6 +464,8 @@ def main(args):
     for epoch in range(start_epoch, args.epochs):
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
+        # if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')) and epoch == start_epoch:
+        #     evaluate(model, data, 0, args, tb_writer=writer, tokenizer=tokenizer)
 
         train_video_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist_model, args, tb_writer=writer)
         completed_epoch = epoch + 1

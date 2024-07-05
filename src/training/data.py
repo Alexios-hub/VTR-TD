@@ -453,68 +453,163 @@ def get_wds_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokeni
 
     return DataInfo(dataloader=dataloader, shared_epoch=shared_epoch)
 
-def read_video_pyav(container, indices):
-    '''
-    Decode the video with PyAV decoder.
-    Args:
-        container (`av.container.input.InputContainer`): PyAV container.
-        indices (`List[int]`): List of frame indices to decode.
-    Returns:
-        result (np.ndarray): np array of decoded frames of shape (num_frames, height, width, 3).
-    '''
-    frames = []
-    container.seek(0)
-    for i, frame in enumerate(container.decode(video=0)):
-        if i > indices[-1]:
-            break
-        if i in indices:
-            frames.append(frame)
-    return np.stack([x.to_ndarray(format="rgb24") for x in frames])
+# def read_video_pyav(container, indices):
+#     '''
+#     Decode the video with PyAV decoder.
+#     Args:
+#         container (`av.container.input.InputContainer`): PyAV container.
+#         indices (`List[int]`): List of frame indices to decode.
+#     Returns:
+#         result (np.ndarray): np array of decoded frames of shape (num_frames, height, width, 3).
+#     '''
+#     frames = []
+#     container.seek(0)
+#     for i, frame in enumerate(container.decode(video=0)):
+#         if i > indices[-1]:
+#             break
+#         if i in indices:
+#             frames.append(frame)
+#     return np.stack([x.to_ndarray(format="rgb24") for x in frames])
 
-def sample_frame_indices(clip_len, seg_len):
-    '''
-    Sample a given number of frame indices from the video evenly across the entire length.
-    Args:
-        clip_len (`int`): Total number of frames to sample.
-        seg_len (`int`): Total number of frames in the video.
-    Returns:
-        indices (`List[int]`): List of sampled frame indices
-    '''
-    indices = np.linspace(0, seg_len - 1, num=clip_len, endpoint=True)
-    indices = np.round(indices).astype(np.int64)
-    return indices.tolist()
+# def sample_frame_indices(clip_len, seg_len):
+#     '''
+#     Sample a given number of frame indices from the video evenly across the entire length.
+#     Args:
+#         clip_len (`int`): Total number of frames to sample.
+#         seg_len (`int`): Total number of frames in the video.
+#     Returns:
+#         indices (`List[int]`): List of sampled frame indices
+#     '''
+#     indices = np.linspace(0, seg_len - 1, num=clip_len, endpoint=True)
+#     indices = np.round(indices).astype(np.int64)
+#     return indices.tolist()
 
 
-def t_decode_video(video, preprocess_img):
-    inputs = preprocess_img(list(video), return_tensors="pt")
-    inputs = inputs['pixel_values'][0]
-    return inputs
+# def t_decode_video(video, preprocess_img):
+#     inputs = preprocess_img(list(video), return_tensors="pt")
+#     inputs = inputs['pixel_values'][0]
+#     return inputs
 
-def decode_video(video, preprocess_img):
-    preprocessed_frames = torch.stack([preprocess_img(Image.fromarray(frame)) for frame in video])
-    return preprocessed_frames
+# def decode_video(video, preprocess_img):
+#     preprocessed_frames = torch.stack([preprocess_img(Image.fromarray(frame)) for frame in video])
+#     return preprocessed_frames
 
-def process_text(texts, tokenizer):
-    text = random.choice(texts)
-    return tokenizer(text)[0]
+def get_frame_indices(num_frames, vlen, sample='rand', fix_start=None, input_fps=1, max_num_frames=-1):
+    if sample in ["rand", "middle"]: # uniform sampling
+        acc_samples = min(num_frames, vlen)
+        # split the video into `acc_samples` intervals, and sample from each interval.
+        intervals = np.linspace(start=0, stop=vlen, num=acc_samples + 1).astype(int)
+        ranges = []
+        for idx, interv in enumerate(intervals[:-1]):
+            ranges.append((interv, intervals[idx + 1] - 1))
+        if sample == 'rand':
+            try:
+                frame_indices = [random.choice(range(x[0], x[1])) for x in ranges]
+            except:
+                frame_indices = np.random.permutation(vlen)[:acc_samples]
+                frame_indices.sort()
+                frame_indices = list(frame_indices)
+        elif fix_start is not None:
+            frame_indices = [x[0] + fix_start for x in ranges]
+        elif sample == 'middle':
+            frame_indices = [(x[0] + x[1]) // 2 for x in ranges]
+        else:
+            raise NotImplementedError
 
-def preprocess_sample(args,sample,preprocess_img,t_preprocess_img,tokenizer):
-    video = io.BytesIO(sample['video'])
-    container = av.open(video)
-    indices = sample_frame_indices(clip_len=args.num_frames, seg_len=container.streams.video[0].frames)
-    video = read_video_pyav(container, indices)#(16, 360, 640, 3)
-    s_video = decode_video(video,preprocess_img)
-    t_video = t_decode_video(video,t_preprocess_img)
-    texts = json.loads(sample['text'].decode('utf-8'))
-    text = process_text(texts=texts,tokenizer=tokenizer)
-    return{
-        'video':s_video,
-        't_video':t_video,
-        'text': text
+        if len(frame_indices) < num_frames:  # padded with last frame
+            padded_frame_indices = [frame_indices[-1]] * num_frames
+            padded_frame_indices[:len(frame_indices)] = frame_indices
+            frame_indices = padded_frame_indices
+    elif "fps" in sample:  # fps0.5, sequentially sample frames at 0.5 fps
+        output_fps = float(sample[3:])
+        duration = float(vlen) / input_fps
+        delta = 1 / output_fps  # gap between frames, this is also the clip length each frame represents
+        frame_seconds = np.arange(0 + delta / 2, duration + delta / 2, delta)
+        frame_indices = np.around(frame_seconds * input_fps).astype(int)
+        frame_indices = [e for e in frame_indices if e < vlen]
+        if max_num_frames > 0 and len(frame_indices) > max_num_frames:
+            frame_indices = frame_indices[:max_num_frames]
+            # frame_indices = np.linspace(0 + delta / 2, duration + delta / 2, endpoint=False, num=max_num_frames)
+    else:
+        raise ValueError
+    return frame_indices
+
+def read_frames_decord_stream(
+        video_stream, num_frames, sample='rand', fix_start=None, 
+        max_num_frames=-1, trimmed30=False
+    ):
+    video_reader = VideoReader(io.BytesIO(video_stream), num_threads=1)
+    vlen = len(video_reader)
+    fps = video_reader.get_avg_fps()
+    duration = vlen / float(fps)
+
+    # only use top 30 seconds
+    if trimmed30 and duration > 30:
+        duration = 30
+        vlen = int(30 * float(fps))
+
+    frame_indices = get_frame_indices(
+        num_frames, vlen, sample=sample, fix_start=fix_start,
+        input_fps=fps, max_num_frames=max_num_frames
+    )
+    frames = torch.from_numpy(video_reader.get_batch(frame_indices).asnumpy())  # (T, H, W, C)
+    frames = frames.permute(0, 3, 1, 2)  # (T, C, H, W)
+    return frames, frame_indices, duration
+
+# def process_text(texts, tokenizer):
+#     text = random.choice(texts)
+#     return tokenizer(text)[0]
+
+# def preprocess_sample(args,sample,preprocess_img,t_preprocess_img,tokenizer):
+#     video = io.BytesIO(sample['video'])
+#     container = av.open(video)
+#     indices = sample_frame_indices(clip_len=args.num_frames, seg_len=container.streams.video[0].frames)
+#     video = read_video_pyav(container, indices)#(16, 360, 640, 3)
+#     s_video = decode_video(video,preprocess_img)
+#     t_video = t_decode_video(video,t_preprocess_img)
+#     texts = json.loads(sample['text'].decode('utf-8'))
+#     text = process_text(texts=texts,tokenizer=tokenizer)
+#     return{
+#         'video':s_video,
+#         't_video':t_video,
+#         'text': text
+#     }
+
+def custom_decoder(key, data):
+    if key.endswith(".jpg") or key.endswith(".png"):
+        return np.array(Image.open(io.BytesIO(data)))
+    elif key.endswith(".pth"):
+        return torch.load(io.BytesIO(data), map_location=torch.device('cpu'))
+    elif key.endswith(".txt"):
+        return data.decode("utf-8")
+    elif key.endswith(".json"):
+        return json.loads(data.decode('utf-8'))
+    else:
+        return data
+def preprocess_sample(args,sample,preprocess_img,tokenizer):
+    # frames, _, _ = read_frames_decord_stream(video_stream=sample['video'],num_frames=4,sample='middle',max_num_frames=-1,trimmed30=False)#frames=[4, 3, 240, 320]
+    frames = sample['pth']['frames']
+    del sample['pth']['frames']
+    images_input = preprocess_img(frames)
+    texts = sample['texts']
+    text_idx = random.choice(range(0,len(texts)))
+    text = tokenizer(texts[text_idx])[0]
+    t_features = sample['pth']
+    t_features['t_texts_embeds'] = t_features['t_texts_embeds'][text_idx]
+    t_features['t_pooled_texts_embeds'] = t_features['t_pooled_texts_embeds'][text_idx]
+    t_features['t_text_projs'] = t_features['t_text_projs'][text_idx]
+    return_sample = {
+        'video':images_input,
+        'text':text
     }
+    for key in t_features.keys():
+        t_features[key] = t_features[key].squeeze()
+    return_sample.update(t_features)
+    
+    return return_sample
+
 
 def get_wds_video_retrieval_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokenizer=None):
-    t_preprocess_img =  AutoImageProcessor.from_pretrained("MCG-NJU/videomae-base")
     input_shards = args.train_data if is_train else args.val_data
     assert input_shards is not None
     resampled = getattr(args, 'dataset_resampled', False) and is_train
@@ -578,15 +673,15 @@ def get_wds_video_retrieval_dataset(args, preprocess_img, is_train, epoch=0, flo
 
     pipeline.extend([
         # wds.decode("pilrgb", handler=log_and_continue),
-        wds.rename(video="mp4;avi", text="json"),
+        wds.decode(custom_decoder),
+        wds.rename(video="mp4;avi", texts="json"),
         wds.map(
             lambda sample: preprocess_sample(args=args, sample=sample, \
                                              preprocess_img=preprocess_img, \
-                                                t_preprocess_img=t_preprocess_img, \
                                                     tokenizer=tokenizer)
 
         ),
-        wds.to_tuple("video", "t_video", "text"),
+        wds.to_tuple("video", "text", "t_image_feats","t_pooled_image_feats","t_texts_embeds","t_pooled_texts_embeds","t_visual_projs","t_text_projs"),
         wds.batched(args.batch_size, partial=not is_train)
     ])
 
@@ -637,140 +732,140 @@ def get_wds_video_retrieval_dataset(args, preprocess_img, is_train, epoch=0, flo
 
     return DataInfo(dataloader=dataloader, shared_epoch=shared_epoch)
 
-def preprocess_mae_sample(args,sample,preprocess_img,t_preprocess_img,tokenizer):
-    texts = json.loads(sample['text'].decode('utf-8'))
-    text = process_text(texts=texts,tokenizer=tokenizer)
-    sample["pth"] = torch.load(io.BytesIO(sample["pth"]),map_location='cpu')
-    clip_video_input = sample["pth"]["clip_video_input"]
-    mae_video_features = sample["pth"]["mae_video_features"]
-    return{
-        'clip_video_input':clip_video_input,
-        'mae_video_features':mae_video_features,
-        'text': text
-    }
+# def preprocess_mae_sample(args,sample,preprocess_img,t_preprocess_img,tokenizer):
+#     texts = json.loads(sample['text'].decode('utf-8'))
+#     text = process_text(texts=texts,tokenizer=tokenizer)
+#     sample["pth"] = torch.load(io.BytesIO(sample["pth"]),map_location='cpu')
+#     clip_video_input = sample["pth"]["clip_video_input"]
+#     mae_video_features = sample["pth"]["mae_video_features"]
+#     return{
+#         'clip_video_input':clip_video_input,
+#         'mae_video_features':mae_video_features,
+#         'text': text
+#     }
 
-def get_wds_video_retrieval_preprocess_mae_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokenizer=None):
-    t_preprocess_img =  AutoImageProcessor.from_pretrained("MCG-NJU/videomae-base")
-    input_shards = args.train_data if is_train else args.val_data
-    assert input_shards is not None
-    resampled = getattr(args, 'dataset_resampled', False) and is_train
+# def get_wds_video_retrieval_preprocess_mae_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokenizer=None):
+#     t_preprocess_img =  AutoImageProcessor.from_pretrained("MCG-NJU/videomae-base")
+#     input_shards = args.train_data if is_train else args.val_data
+#     assert input_shards is not None
+#     resampled = getattr(args, 'dataset_resampled', False) and is_train
 
-    num_shards = None
-    if is_train:
-        if args.train_num_samples is not None:
-            num_samples = args.train_num_samples
-        else:
-            num_samples, num_shards = get_dataset_size(input_shards)
-            if not num_samples:
-                raise RuntimeError(
-                    'Currently, the number of dataset samples must be specified for the training dataset. '
-                    'Please specify it via `--train-num-samples` if no dataset length info is present.')
-    else:
-        # Eval will just exhaust the iterator if the size is not specified.
-        num_samples = args.val_num_samples or 0 
+#     num_shards = None
+#     if is_train:
+#         if args.train_num_samples is not None:
+#             num_samples = args.train_num_samples
+#         else:
+#             num_samples, num_shards = get_dataset_size(input_shards)
+#             if not num_samples:
+#                 raise RuntimeError(
+#                     'Currently, the number of dataset samples must be specified for the training dataset. '
+#                     'Please specify it via `--train-num-samples` if no dataset length info is present.')
+#     else:
+#         # Eval will just exhaust the iterator if the size is not specified.
+#         num_samples = args.val_num_samples or 0 
 
-    shared_epoch = SharedEpoch(epoch=epoch)  # create a shared epoch store to sync epoch to dataloader worker proc
+#     shared_epoch = SharedEpoch(epoch=epoch)  # create a shared epoch store to sync epoch to dataloader worker proc
 
-    if is_train and args.train_data_upsampling_factors is not None:
-        assert resampled, "--train_data_upsampling_factors is only supported when sampling with replacement (with --dataset-resampled)."
+#     if is_train and args.train_data_upsampling_factors is not None:
+#         assert resampled, "--train_data_upsampling_factors is only supported when sampling with replacement (with --dataset-resampled)."
     
-    if resampled:
-        pipeline = [ResampledShards2(
-            input_shards,
-            weights=args.train_data_upsampling_factors,
-            deterministic=True,
-            epoch=shared_epoch,
-        )]
-    else:
-        pipeline = [wds.SimpleShardList(input_shards)]
+#     if resampled:
+#         pipeline = [ResampledShards2(
+#             input_shards,
+#             weights=args.train_data_upsampling_factors,
+#             deterministic=True,
+#             epoch=shared_epoch,
+#         )]
+#     else:
+#         pipeline = [wds.SimpleShardList(input_shards)]
 
-    # at this point we have an iterator over all the shards
-    if is_train:
-        if not resampled:
-            pipeline.extend([
-                detshuffle2(
-                    bufsize=_SHARD_SHUFFLE_SIZE,
-                    initial=_SHARD_SHUFFLE_INITIAL,
-                    seed=args.seed,
-                    epoch=shared_epoch,
-                ),
-                wds.split_by_node,
-                wds.split_by_worker,
-            ])
-        pipeline.extend([
-            # at this point, we have an iterator over the shards assigned to each worker at each node
-            tarfile_to_samples_nothrow,  # wds.tarfile_to_samples(handler=log_and_continue),
-            wds.shuffle(
-                bufsize=_SAMPLE_SHUFFLE_SIZE,
-                initial=_SAMPLE_SHUFFLE_INITIAL,
-            ),
-        ])
-    else:
-        pipeline.extend([
-            wds.split_by_worker,
-            # at this point, we have an iterator over the shards assigned to each worker
-            wds.tarfile_to_samples(handler=log_and_continue),
-        ])
+#     # at this point we have an iterator over all the shards
+#     if is_train:
+#         if not resampled:
+#             pipeline.extend([
+#                 detshuffle2(
+#                     bufsize=_SHARD_SHUFFLE_SIZE,
+#                     initial=_SHARD_SHUFFLE_INITIAL,
+#                     seed=args.seed,
+#                     epoch=shared_epoch,
+#                 ),
+#                 wds.split_by_node,
+#                 wds.split_by_worker,
+#             ])
+#         pipeline.extend([
+#             # at this point, we have an iterator over the shards assigned to each worker at each node
+#             tarfile_to_samples_nothrow,  # wds.tarfile_to_samples(handler=log_and_continue),
+#             wds.shuffle(
+#                 bufsize=_SAMPLE_SHUFFLE_SIZE,
+#                 initial=_SAMPLE_SHUFFLE_INITIAL,
+#             ),
+#         ])
+#     else:
+#         pipeline.extend([
+#             wds.split_by_worker,
+#             # at this point, we have an iterator over the shards assigned to each worker
+#             wds.tarfile_to_samples(handler=log_and_continue),
+#         ])
 
-    pipeline.extend([
-        # wds.decode("pilrgb", handler=log_and_continue),
-        wds.rename(video="mp4", text="json", pth="pth"),
-        wds.map(
-            lambda sample: preprocess_mae_sample(args=args, sample=sample, \
-                                             preprocess_img=preprocess_img, \
-                                                t_preprocess_img=t_preprocess_img, \
-                                                    tokenizer=tokenizer)
-        ),
-        wds.to_tuple("clip_video_input", "mae_video_features", "text"),
-        wds.batched(args.batch_size, partial=not is_train)
-    ])
+#     pipeline.extend([
+#         # wds.decode("pilrgb", handler=log_and_continue),
+#         wds.rename(video="mp4", text="json", pth="pth"),
+#         wds.map(
+#             lambda sample: preprocess_mae_sample(args=args, sample=sample, \
+#                                              preprocess_img=preprocess_img, \
+#                                                 t_preprocess_img=t_preprocess_img, \
+#                                                     tokenizer=tokenizer)
+#         ),
+#         wds.to_tuple("clip_video_input", "mae_video_features", "text"),
+#         wds.batched(args.batch_size, partial=not is_train)
+#     ])
 
-    dataset = wds.DataPipeline(*pipeline)
+#     dataset = wds.DataPipeline(*pipeline)
 
-    if is_train:
-        if not resampled:
-            num_shards = num_shards or len(expand_urls(input_shards)[0])
-            assert num_shards >= args.workers * args.world_size, 'number of shards must be >= total workers'
-        # roll over and repeat a few samples to get same number of full batches on each node
-        round_fn = math.floor if floor else math.ceil
-        global_batch_size = args.batch_size * args.world_size
-        num_batches = round_fn(num_samples / global_batch_size)
-        num_workers = max(1, args.workers)
-        num_worker_batches = round_fn(num_batches / num_workers)  # per dataloader worker
-        num_batches = num_worker_batches * num_workers
-        num_samples = num_batches * global_batch_size
-        dataset = dataset.with_epoch(num_worker_batches)  # each worker is iterating over this
-    else:
-        # last batches are partial, eval is done on single (master) node
-        num_batches = math.ceil(num_samples / args.batch_size)
+#     if is_train:
+#         if not resampled:
+#             num_shards = num_shards or len(expand_urls(input_shards)[0])
+#             assert num_shards >= args.workers * args.world_size, 'number of shards must be >= total workers'
+#         # roll over and repeat a few samples to get same number of full batches on each node
+#         round_fn = math.floor if floor else math.ceil
+#         global_batch_size = args.batch_size * args.world_size
+#         num_batches = round_fn(num_samples / global_batch_size)
+#         num_workers = max(1, args.workers)
+#         num_worker_batches = round_fn(num_batches / num_workers)  # per dataloader worker
+#         num_batches = num_worker_batches * num_workers
+#         num_samples = num_batches * global_batch_size
+#         dataset = dataset.with_epoch(num_worker_batches)  # each worker is iterating over this
+#     else:
+#         # last batches are partial, eval is done on single (master) node
+#         num_batches = math.ceil(num_samples / args.batch_size)
 
-    dataloader = wds.WebLoader(
-        dataset,
-        batch_size=None,
-        shuffle=False,
-        num_workers=args.workers,
-        persistent_workers=args.workers > 0,
-    )
+#     dataloader = wds.WebLoader(
+#         dataset,
+#         batch_size=None,
+#         shuffle=False,
+#         num_workers=args.workers,
+#         persistent_workers=args.workers > 0,
+#     )
 
-    # FIXME not clear which approach is better, with_epoch before vs after dataloader?
-    # hoping to resolve via https://github.com/webdataset/webdataset/issues/169
-    # if is_train:
-    #     # roll over and repeat a few samples to get same number of full batches on each node
-    #     global_batch_size = args.batch_size * args.world_size
-    #     num_batches = math.ceil(num_samples / global_batch_size)
-    #     num_workers = max(1, args.workers)
-    #     num_batches = math.ceil(num_batches / num_workers) * num_workers
-    #     num_samples = num_batches * global_batch_size
-    #     dataloader = dataloader.with_epoch(num_batches)
-    # else:
-    #     # last batches are partial, eval is done on single (master) node
-    #     num_batches = math.ceil(num_samples / args.batch_size)
+#     # FIXME not clear which approach is better, with_epoch before vs after dataloader?
+#     # hoping to resolve via https://github.com/webdataset/webdataset/issues/169
+#     # if is_train:
+#     #     # roll over and repeat a few samples to get same number of full batches on each node
+#     #     global_batch_size = args.batch_size * args.world_size
+#     #     num_batches = math.ceil(num_samples / global_batch_size)
+#     #     num_workers = max(1, args.workers)
+#     #     num_batches = math.ceil(num_batches / num_workers) * num_workers
+#     #     num_samples = num_batches * global_batch_size
+#     #     dataloader = dataloader.with_epoch(num_batches)
+#     # else:
+#     #     # last batches are partial, eval is done on single (master) node
+#     #     num_batches = math.ceil(num_samples / args.batch_size)
 
-    # add meta-data to dataloader instance for convenience
-    dataloader.num_batches = num_batches
-    dataloader.num_samples = num_samples
+#     # add meta-data to dataloader instance for convenience
+#     dataloader.num_batches = num_batches
+#     dataloader.num_samples = num_samples
 
-    return DataInfo(dataloader=dataloader, shared_epoch=shared_epoch)
+#     return DataInfo(dataloader=dataloader, shared_epoch=shared_epoch)
 
 def get_csv_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
     input_filename = args.train_data if is_train else args.val_data
@@ -855,8 +950,8 @@ def get_synthetic_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None
 def get_dataset_fn(data_path, dataset_type):
     if dataset_type == "webdataset":
         # return get_wds_dataset
-        # return get_wds_video_retrieval_dataset
-        return get_wds_video_retrieval_preprocess_mae_dataset
+        return get_wds_video_retrieval_dataset
+        # return get_wds_video_retrieval_preprocess_mae_dataset
     elif dataset_type == "csv":
         return get_csv_dataset
     elif dataset_type == "synthetic":
