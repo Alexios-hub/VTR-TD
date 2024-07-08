@@ -24,7 +24,9 @@ from .utils import to_2tuple
 
 from transformers.models.videomae.modeling_videomae import get_sinusoid_encoding_table
 
-
+from timm.layers.norm_act import _create_act
+from timm.layers.trace_utils import _assert
+from open_clip.modeling_perceiver_xattn import Perceiver
 @dataclass
 class CLIPVisionCfg:
     layers: Union[Tuple[int, int, int, int], int] = 12
@@ -364,8 +366,8 @@ class CustomTextCLIP(nn.Module):
         self.text.set_grad_checkpointing(enable)
 
     def encode_image(self, image, normalize: bool = False):
-        features = self.visual(image)
-        return F.normalize(features, dim=-1) if normalize else features
+        features, stages_features = self.visual(image)
+        return (F.normalize(features, dim=-1), stages_features) if normalize else (features, stages_features)
 
     def encode_text(self, text, normalize: bool = False):
         features = self.text(text)
@@ -385,14 +387,15 @@ class CustomTextCLIP(nn.Module):
             image: Optional[torch.Tensor] = None,
             text: Optional[torch.Tensor] = None,
     ):
-        image_features = self.encode_image(image, normalize=True) if image is not None else None
+        image_features, stages_features = self.encode_image(image, normalize=True) if image is not None else None
         text_features = self.encode_text(text, normalize=True) if text is not None else None
 
         if self.output_dict:
             out_dict = {
                 "image_features": image_features,
                 "text_features": text_features,
-                "logit_scale": self.logit_scale.exp()
+                "logit_scale": self.logit_scale.exp(),
+                "stages_features":stages_features
             }
             if self.logit_bias is not None:
                 out_dict['logit_bias'] = self.logit_bias
@@ -401,79 +404,6 @@ class CustomTextCLIP(nn.Module):
         if self.logit_bias is not None:
             return image_features, text_features, self.logit_scale.exp(), self.logit_bias
         return image_features, text_features, self.logit_scale.exp()
-
-# class MyMobileCLIP(CustomTextCLIP):
-#     def __init__(
-#             self,
-#             pretrained_model: CustomTextCLIP,
-#             embed_dim: int,
-#             vision_cfg: CLIPVisionCfg,
-#             text_cfg: CLIPTextCfg,
-#             quick_gelu: bool = False,
-#             init_logit_scale: float = np.log(1 / 0.07),
-#             init_logit_bias: Optional[float] = None,
-#             cast_dtype: Optional[torch.dtype] = None,
-#             output_dict: bool = False,
-#     ):
-#         super().__init__(embed_dim,
-#                        vision_cfg,
-#                        text_cfg,
-#                        quick_gelu,
-#                        init_logit_scale,
-#                        init_logit_bias,
-#                        cast_dtype,
-#                        output_dict)
-#         self.visual = pretrained_model.visual
-#         self.text = pretrained_model.text
-#         self.logit_scale = pretrained_model.logit_scale
-#         self.logit_bias = pretrained_model.logit_bias
-
-#         visual_backbone = self.visual
-#         visual_backbone.trunk.head = nn.Identity()
-#         visual_backbone.head = nn.Identity()
-#         self.visual_backbone = visual_backbone
-
-#         visual_proj = self.visual
-#         visual_proj.trunk.stem = nn.Identity()
-#         visual_proj.trunk.stages = nn.Sequential(nn.Identity())
-#         visual_proj.trunk.final_conv = nn.Identity()
-
-#         self.visual_proj = visual_proj
-#         del self.visual
-
-#     def encode_image(self, image, normalize: bool = False, return_patch_features: bool = False):
-#         patch_features = self.visual_backbone(image)
-#         features = self.visual_proj(patch_features)
-#         features = F.normalize(features, dim=-1) if normalize else features
-#         if return_patch_features:
-#             return features, patch_features
-#         return features
-    
-#     def forward(
-#             self,
-#             image: Optional[torch.Tensor] = None,
-#             text: Optional[torch.Tensor] = None,
-#             return_patch_features: bool = False
-#     ):
-#         if return_patch_features == False:
-#             image_features = self.encode_image(image, normalize=True) if image is not None else None
-#         else:
-#             image_features, image_patch_features = self.encode_image(image, normalize=True, return_patch_features=return_patch_features)
-#         text_features = self.encode_text(text, normalize=True) if text is not None else None
-
-#         if self.output_dict:
-#             out_dict = {
-#                 "image_features": image_features,
-#                 "text_features": text_features,
-#                 "logit_scale": self.logit_scale.exp()
-#             }
-#             if return_patch_features:
-#                 out_dict['image_patch_features'] = image_patch_features#[B,D,H,W]
-#             if self.logit_bias is not None:
-#                 out_dict['logit_bias'] = self.logit_bias
-#             return out_dict
-#         else:
-#             raise NotImplementedError('only support return dict.')
 
 
 class MLP(nn.Module):
@@ -484,31 +414,87 @@ class MLP(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
+        x_input = x
         x = self.fc1(x)
         x = self.gelu(x)
         x = self.fc2(x)
+        return x + x_input
+
+
+class myTemporalTransformer(nn.Module):
+    def __init__(self, d_model=512, nhead=8, n_layers=3, n_position=4):
+        super().__init__()
+        self.num_frames = n_position
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model,nhead=nhead,batch_first=True)
+        self.encoder = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=n_layers)
+        self.position_embeddings = get_sinusoid_encoding_table(n_position=n_position,d_hid=d_model)
+
+    def forward(self, x):
+        #x:[B*T,C,H,W]
+        n, C, H, W = x.shape
+        B = n // self.num_frames
+        x = x.reshape(B, self.num_frames, C, H*W).permute(0, 3, 1, 2) + self.position_embeddings.type_as(x).to(x.device).clone().detach()#[B,H*W,T,C]
+        x = x.transpose(1, 2).reshape(B, self.num_frames*H*W, C)#[B,T*H*W,C]
+        x = self.encoder(x).reshape(B*self.num_frames, H, W, C).permute(0, 3, 1, 2)#[B*T,C,H,W]
         return x
 
-
+def patchify_feature_map(x):
+    """
+    对输入的特征图进行patch化，堆叠相邻的2x2 tokens。
+    
+    参数:
+    x: 输入的特征图，形状为[B, C, H, W]，其中C=64, H=64, W=64
+    
+    返回:
+    patchified_x: patch化后的特征图，形状为[B, 4C, 32, 32]
+    """
+    # unfold操作，将每个2x2的区域展开为单独的维度
+    # 结果的形状将是[B, C, 32, 32, 2, 2]
+    patches = x.unfold(2, 2, 2).unfold(3, 2, 2)
+    
+    # 调整形状，合并通道维度和最后两个维度
+    # 新的形状将是[B, 4C, 32, 32]
+    patchified_x = patches.reshape(x.size(0), x.size(1) * 4, 32, 32)
+    
+    return patchified_x
 
 class VideoCLIP(nn.Module):
     def __init__(
             self,
             clip_2d,
+            num_frames = 4,
             init_logit_scale: float = np.log(1 / 0.07)
     ):
         super().__init__()
+        self.num_frames = num_frames
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
 
-        clip_2d.output_dict = True
         for param in clip_2d.parameters():
             param.requires_grad = False
         self.clip_2d = clip_2d
-        encoder_layer = nn.TransformerEncoderLayer(d_model=768,nhead=8,batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=4)
-        self.position_embeddings = get_sinusoid_encoding_table(n_position=4*196,d_hid=768)
-        self.pool_norm = nn.LayerNorm(768)
-        self.text_proj = MLP(input_dim=512,hidden_dim=512*2,output_dim=768)
+        self.text_proj = MLP(input_dim=512,hidden_dim=512*4,output_dim=512)
+        self.bn_t1 = nn.BatchNorm2d(64)
+
+
+        #insert temporal moudules
+        # self.clip_2d.visual.trunk.stem = nn.Sequential(
+        #     self.clip_2d.visual.trunk.stem[0],
+        #     self.clip_2d.visual.trunk.stem[1],
+        #     self.clip_2d.visual.trunk.stem[2],
+        # )
+
+        # self.clip_2d.visual.trunk.stages = nn.Sequential(
+        #     self.clip_2d.visual.trunk.stages[0],
+        #     self.clip_2d.visual.trunk.stages[1],
+        #     self.clip_2d.visual.trunk.stages[2],
+        #     self.clip_2d.visual.trunk.stages[3],
+        # )
+        self.perceiver = Perceiver(dim=512,
+                                   k_v_dim=64*4,
+                                   depth=3,
+                                   num_latents = 4
+                                   )
+        self.position_embeddings = get_sinusoid_encoding_table(n_position=4*32*32,d_hid=64*4)
 
 
     def forward(
@@ -520,27 +506,31 @@ class VideoCLIP(nn.Module):
         video:shape=[B,num_frames,C,H,W]
         """
         B,T,C,H,W = video.shape#[B,4,3,224,224]
+
+        video = video.reshape(B*T,C,H,W)
         with torch.no_grad():
-            video = video.reshape(B*T,C,H,W)
             out_dict = self.clip_2d(video, text)
-            if isinstance(out_dict['image_features'],tuple):
-                out_dict.update({
-                    'image_features':out_dict['image_features'][0],#[B*T,512]
-                    'tokens':out_dict['image_features'][1]#[B*T,196,768]
-                })
-            # out_dict['image_features'] = out_dict['image_features'].view(B,T,-1)
-            _, L, D = out_dict['tokens'].shape
-            out_dict['tokens'] = out_dict['tokens'].reshape(B, T*L, D)
+        # if isinstance(out_dict['image_features'],tuple):
+        #     out_dict.update({
+        #         'image_features':out_dict['image_features'][0],#[B*T,512]
+        #         'tokens':out_dict['image_features'][1]#[B*T,196,768]
+        #     })
+        out_dict['image_features'] = out_dict['image_features'].view(B,T,-1)
+        _, stage_C, stage_H, stage_W = out_dict['stages_features'][0].shape
+        stages_features = self.bn_t1(out_dict['stages_features'][0])
+        # .reshape(B,T,stage_C,stage_H,stage_W).permute(0,1,3,4,2).reshape(B,-1,stage_C)#[B,T,stage_H,stage_W,stage_C]
+
+        stages_features = patchify_feature_map(stages_features)#[B*T,4stage_C,stage_H//2,stage_W//2]
+        stages_features = stages_features.reshape(B,T,4*stage_C,stage_H//2,stage_W//2).permute(0,1,3,4,2).reshape(B,-1,4*stage_C)#[B,T,stage_H,stage_W,stage_C]
+
+
+        stages_features = stages_features + self.position_embeddings.type_as(stages_features).to(stages_features.device).clone().detach()
+        st_features = self.perceiver(stages_features).squeeze()#[B,4,512]
+
             
-        token_embeddings = out_dict['tokens'] + self.position_embeddings.type_as(out_dict['tokens']).to(out_dict['tokens'].device).clone().detach()#[B,num_frames/2*H*W,C]
-        video_token_features = self.encoder(token_embeddings)#[B,4*196,D=768]
-        pooled_video_token_features = self.pool_norm(video_token_features.reshape(B,T,L,D).mean(2))#在patch维求了平均值但保留了时序[B,T,768]
-
-
         text_features = F.normalize(self.text_proj(out_dict['text_features']),dim=-1)
         output = {}
-        output['image_features'] = pooled_video_token_features
-        output['video_token_features'] = video_token_features
+        output['image_features'] = F.normalize(out_dict['image_features'] + st_features,dim=-1)
         output['text_features'] = text_features
         output['logit_scale'] = self.logit_scale.exp()
         return output
@@ -772,3 +762,116 @@ def get_model_tokenize_cfg(model):
     if vocab_size is not None:
         cfg['vocab_size'] = vocab_size
     return cfg
+
+
+class Custom3DConvModule(nn.Module):
+    def __init__(self, in_channels, num_frames=4):
+        super(Custom3DConvModule, self).__init__()
+        self.num_frames = num_frames
+        
+        # 第一个3x1x1的3D卷积层
+        self.conv3d_1 = nn.Conv3d(in_channels, in_channels*4, kernel_size=(3, 1, 1), stride=1, padding=(1, 0, 0))
+        self.bn_act3d_1 = BatchNormAct3d(in_channels*4)
+        
+        # 第二个3x1x1的3D卷积层
+        self.conv3d_2 = nn.Conv3d(in_channels*4, in_channels, kernel_size=(3, 1, 1), stride=1, padding=(1, 0, 0))
+        self.bn_act3d_2 = BatchNormAct3d(in_channels)
+                
+    def forward(self, x):
+        # 输入 x 的形状为 (B*T, C, H, W)
+        x_in = x
+        B = x.shape[0] // self.num_frames
+        C, H, W = x.shape[1], x.shape[2], x.shape[3]
+        
+        # 重排列数据维度以匹配3D卷积层的输入需求
+        x = x.reshape(B, self.num_frames, C, H, W).transpose(1, 2)
+
+        # 通过第一个3D卷积层和批归一化激活层
+        x = self.bn_act3d_1(self.conv3d_1(x))
+        
+        # 通过第二个3D卷积层和批归一化激活层
+        x = self.bn_act3d_2(self.conv3d_2(x))
+        
+        # 恢复原始维度顺序并合并批次和帧数维度
+        x = x.transpose(1, 2).reshape(B * self.num_frames, C, H, W)
+
+        return x + x_in
+
+
+class BatchNormAct3d(nn.BatchNorm3d):
+    """BatchNorm + Activation for 3D
+
+    This module performs BatchNorm + Activation for 3D convolutions in a manner that will remain backwards
+    compatible with weights trained with separate bn, act.
+    """
+    def __init__(
+            self,
+            num_features,
+            eps=1e-5,
+            momentum=0.1,
+            affine=True,
+            track_running_stats=True,
+            apply_act=True,
+            act_layer=nn.ReLU,
+            act_kwargs=None,
+            inplace=True,
+            drop_layer=None,
+            device=None,
+            dtype=None,
+    ):
+        try:
+            factory_kwargs = {'device': device, 'dtype': dtype}
+            super(BatchNormAct3d, self).__init__(
+                num_features,
+                eps=eps,
+                momentum=momentum,
+                affine=affine,
+                track_running_stats=track_running_stats,
+                **factory_kwargs,
+            )
+        except TypeError:
+            # NOTE for backwards compat with old PyTorch w/o factory device/dtype support
+            super(BatchNormAct3d, self).__init__(
+                num_features,
+                eps=eps,
+                momentum=momentum,
+                affine=affine,
+                track_running_stats=track_running_stats,
+            )
+        self.drop = drop_layer() if drop_layer is not None else nn.Identity()
+        self.act = _create_act(act_layer, act_kwargs=act_kwargs, inplace=inplace, apply_act=apply_act)
+
+    def forward(self, x):
+        _assert(x.ndim == 5, f'expected 5D input (got {x.ndim}D input)')
+
+        if self.momentum is None:
+            exponential_average_factor = 0.0
+        else:
+            exponential_average_factor = self.momentum
+
+        if self.training and self.track_running_stats:
+            if self.num_batches_tracked is not None:  # type: ignore[has-type]
+                self.num_batches_tracked.add_(1)  # type: ignore[has-type]
+                if self.momentum is None:  # use cumulative moving average
+                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
+                else:  # use exponential moving average
+                    exponential_average_factor = self.momentum
+
+        if self.training:
+            bn_training = True
+        else:
+            bn_training = (self.running_mean is None) and (self.running_var is None)
+
+        x = F.batch_norm(
+            x,
+            self.running_mean if not self.training or self.track_running_stats else None,
+            self.running_var if not self.training or self.track_running_stats else None,
+            self.weight,
+            self.bias,
+            bn_training,
+            exponential_average_factor,
+            self.eps,
+        )
+        x = self.drop(x)
+        x = self.act(x)
+        return x

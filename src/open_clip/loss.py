@@ -252,10 +252,8 @@ class VideoDistillClipLoss(ClipLoss):
             world_size,
             use_horovod
         )
-        self.visual_proj = MyOrthogonal(768,1024)
-        self.text_proj = MyOrthogonal(768,1024)
 
-    def dist_loss(self, args, dist_features, s_image_features, s_text_features , s_video_token_features, s_logits_per_image, s_logits_per_text):
+    def dist_loss(self, args, dist_features, s_image_features, s_text_features, s_logits_per_image, s_logits_per_text):
         """
         Calculate token-wise distillation loss between teacher and student features.
     
@@ -276,30 +274,6 @@ class VideoDistillClipLoss(ClipLoss):
         Average KL divergence loss across the batch.
         """
         B = s_image_features.shape[0]
-        # # spatio-temporal loss
-        # # Normalize the features by the square root of the feature dimension, directly using values
-        # teacher_norm = (dist_features['t_image_feats'].shape[-1] ** 0.5)
-        # student_norm = (s_video_token_features.shape[-1] ** 0.5)
-        # # Compute similarity matrices and apply softmax
-        # t_sim = torch.bmm(dist_features['t_image_feats'], dist_features['t_image_feats'].transpose(1, 2)) / teacher_norm
-        # s_sim = torch.bmm(s_video_token_features, s_video_token_features.transpose(1, 2)) / student_norm
-        # t_distribution = F.softmax(t_sim, dim=-1)
-        # s_distribution = F.softmax(s_sim, dim=-1)
-        # # Calculate KL divergence for each sample in the batch
-        # st_loss = args.distill_st_alpha * F.kl_div(torch.log(t_distribution), s_distribution, reduction='batchmean') / B
-
-        # Normalize the features
-        t_image_feats_norm = F.normalize(dist_features['t_image_feats'], dim=-1)
-        s_video_token_features_norm = F.normalize(s_video_token_features, dim=-1)
-        # Compute similarity matrices
-        t_sim = torch.bmm(t_image_feats_norm, t_image_feats_norm.transpose(1, 2))
-        s_sim = torch.bmm(s_video_token_features_norm, s_video_token_features_norm.transpose(1, 2))
-        # Normalize by the number of elements in the distribution
-        # st_loss = args.distill_st_alpha * F.kl_div(torch.log(t_distribution), s_distribution, reduction='batchmean') / (B)
-        st_loss = args.distill_st_alpha * (-(t_sim.softmax(dim=-1) * s_sim.log_softmax(dim=-1)).sum(dim=-1).mean(dim=1).mean(dim=0))
-
-        # st loss with fd
-        # st_loss = args.distill_st_alpha * F.mse_loss(dist_features['t_image_feats'],self.visual_proj(s_video_token_features))
 
 
 
@@ -334,14 +308,13 @@ class VideoDistillClipLoss(ClipLoss):
         # t_loss = args.distill_temporal_alpha * F.mse_loss(dist_features['t_visual_projs'], s_image_features)
 
         #text_fd_loss
-        text_fd_loss = args.distill_text_fd_alpha * F.mse_loss(s_text_features, dist_features['t_text_projs'])
+        # text_fd_loss = args.distill_text_fd_alpha * F.mse_loss(s_text_features, dist_features['t_text_projs'])
 
     
         return {
-            'st_loss':st_loss,
             'ckd_loss':ckd_loss,
             't_loss':t_loss,
-            'text_fd_loss':text_fd_loss
+            # 'text_fd_loss':text_fd_loss
         }
     
 
@@ -381,8 +354,7 @@ class VideoDistillClipLoss(ClipLoss):
     def forward(
             self,
             args,
-            image_features,#[B,T,768]
-            video_token_features,#[B,T*196,768]
+            image_features,#[B,T,512]
             text_features,
             logit_scale,
             dist_features,
@@ -399,7 +371,7 @@ class VideoDistillClipLoss(ClipLoss):
         ) / 2
 
         distill_loss = self.dist_loss(args=args, dist_features=dist_features,s_image_features=image_features,\
-                                      s_text_features=text_features,s_video_token_features=video_token_features,s_logits_per_image=logits_per_image,s_logits_per_text=logits_per_text)
+                                      s_text_features=text_features,s_logits_per_image=logits_per_image,s_logits_per_text=logits_per_text)
 
         if output_dict:
             output = {"contrastive_loss": contrastive_loss}
