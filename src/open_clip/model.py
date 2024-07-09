@@ -473,6 +473,7 @@ class VideoCLIP(nn.Module):
             param.requires_grad = False
         self.clip_2d = clip_2d
         self.text_proj = MLP(input_dim=512,hidden_dim=512*4,output_dim=512)
+        # self.text_proj = nn.Identity()
         self.bn_t1 = nn.BatchNorm2d(64)
 
 
@@ -490,11 +491,11 @@ class VideoCLIP(nn.Module):
         #     self.clip_2d.visual.trunk.stages[3],
         # )
         self.perceiver = Perceiver(dim=512,
-                                   k_v_dim=64*4,
-                                   depth=3,
+                                   k_v_dim=64,
+                                   depth=2,
                                    num_latents = 4
                                    )
-        self.position_embeddings = get_sinusoid_encoding_table(n_position=4*32*32,d_hid=64*4)
+        self.position_embeddings = get_sinusoid_encoding_table(n_position=4*64*64,d_hid=64)
 
 
     def forward(
@@ -518,10 +519,10 @@ class VideoCLIP(nn.Module):
         out_dict['image_features'] = out_dict['image_features'].view(B,T,-1)
         _, stage_C, stage_H, stage_W = out_dict['stages_features'][0].shape
         stages_features = self.bn_t1(out_dict['stages_features'][0])
-        # .reshape(B,T,stage_C,stage_H,stage_W).permute(0,1,3,4,2).reshape(B,-1,stage_C)#[B,T,stage_H,stage_W,stage_C]
+        stages_features = stages_features.reshape(B,T,stage_C,stage_H,stage_W).permute(0,1,3,4,2).reshape(B,-1,stage_C)#[B,T,stage_H,stage_W,stage_C]
 
-        stages_features = patchify_feature_map(stages_features)#[B*T,4stage_C,stage_H//2,stage_W//2]
-        stages_features = stages_features.reshape(B,T,4*stage_C,stage_H//2,stage_W//2).permute(0,1,3,4,2).reshape(B,-1,4*stage_C)#[B,T,stage_H,stage_W,stage_C]
+        # stages_features = patchify_feature_map(stages_features)#[B*T,4stage_C,stage_H//2,stage_W//2]
+        # stages_features = stages_features.reshape(B,T,4*stage_C,stage_H//2,stage_W//2).permute(0,1,3,4,2).reshape(B,-1,4*stage_C)#[B,T,stage_H,stage_W,stage_C]
 
 
         stages_features = stages_features + self.position_embeddings.type_as(stages_features).to(stages_features.device).clone().detach()
