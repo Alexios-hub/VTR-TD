@@ -243,7 +243,8 @@ def main(args):
         **model_kwargs,
     )
 
-    model_org.train()
+    model_org.eval()
+    model_org.text.output_tokens = True
     preprocess_train = transforms.Compose([
             transforms.RandomResizedCrop(
                 size=(256, 256), 

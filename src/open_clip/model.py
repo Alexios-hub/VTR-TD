@@ -369,9 +369,11 @@ class CustomTextCLIP(nn.Module):
         features, stages_features = self.visual(image)
         return (F.normalize(features, dim=-1), stages_features) if normalize else (features, stages_features)
 
+
     def encode_text(self, text, normalize: bool = False):
-        features = self.text(text)
-        return F.normalize(features, dim=-1) if normalize else features
+        # features = self.text(text)
+        features, tokens = self.text(text)
+        return (F.normalize(features, dim=-1),tokens) if normalize else (features,tokens)
 
     def get_logits(self, image, text):
         image_features = self.encode_image(image, normalize=True)
@@ -388,14 +390,15 @@ class CustomTextCLIP(nn.Module):
             text: Optional[torch.Tensor] = None,
     ):
         image_features, stages_features = self.encode_image(image, normalize=True) if image is not None else None
-        text_features = self.encode_text(text, normalize=True) if text is not None else None
+        text_features, text_tokens = self.encode_text(text, normalize=True) if text is not None else None
 
         if self.output_dict:
             out_dict = {
                 "image_features": image_features,
                 "text_features": text_features,
                 "logit_scale": self.logit_scale.exp(),
-                "stages_features":stages_features
+                "stages_features":stages_features,
+                "text_tokens":text_tokens
             }
             if self.logit_bias is not None:
                 out_dict['logit_bias'] = self.logit_bias
@@ -472,30 +475,26 @@ class VideoCLIP(nn.Module):
         for param in clip_2d.parameters():
             param.requires_grad = False
         self.clip_2d = clip_2d
-        self.text_proj = MLP(input_dim=512,hidden_dim=512*4,output_dim=512)
         # self.text_proj = nn.Identity()
-        self.bn_t1 = nn.BatchNorm2d(64)
+        # self.text_proj = MLP(512,512*4,512)
+        # self.visual_proj = MLP(512,512*4,512)
+        self.text_proj = nn.Linear(512,512,bias=False)
+        self.visual_proj = nn.Linear(512,512,bias=False)
 
-
-        #insert temporal moudules
-        # self.clip_2d.visual.trunk.stem = nn.Sequential(
-        #     self.clip_2d.visual.trunk.stem[0],
-        #     self.clip_2d.visual.trunk.stem[1],
-        #     self.clip_2d.visual.trunk.stem[2],
-        # )
-
-        # self.clip_2d.visual.trunk.stages = nn.Sequential(
-        #     self.clip_2d.visual.trunk.stages[0],
-        #     self.clip_2d.visual.trunk.stages[1],
-        #     self.clip_2d.visual.trunk.stages[2],
-        #     self.clip_2d.visual.trunk.stages[3],
-        # )
+        
         self.perceiver = Perceiver(dim=512,
-                                   k_v_dim=64,
-                                   depth=2,
-                                   num_latents = 4
+                                   k_v_dim=128,
+                                   depth=1,
+                                   num_latents = 64
                                    )
-        self.position_embeddings = get_sinusoid_encoding_table(n_position=4*64*64,d_hid=64)
+        self.position_embeddings = get_sinusoid_encoding_table(n_position=4*32*32,d_hid=128)
+        self.bn_t = nn.BatchNorm2d(128)
+        self.text_perceiver = Perceiver(
+            dim=512,
+            k_v_dim=512,
+            depth=1,
+            num_latents=64
+        )
 
 
     def forward(
@@ -516,23 +515,23 @@ class VideoCLIP(nn.Module):
         #         'image_features':out_dict['image_features'][0],#[B*T,512]
         #         'tokens':out_dict['image_features'][1]#[B*T,196,768]
         #     })
-        out_dict['image_features'] = out_dict['image_features'].view(B,T,-1)
-        _, stage_C, stage_H, stage_W = out_dict['stages_features'][0].shape
-        stages_features = self.bn_t1(out_dict['stages_features'][0])
-        stages_features = stages_features.reshape(B,T,stage_C,stage_H,stage_W).permute(0,1,3,4,2).reshape(B,-1,stage_C)#[B,T,stage_H,stage_W,stage_C]
+        out_dict['image_features'] = out_dict['image_features'].view(B,T,-1).mean(dim=1)
 
-        # stages_features = patchify_feature_map(stages_features)#[B*T,4stage_C,stage_H//2,stage_W//2]
-        # stages_features = stages_features.reshape(B,T,4*stage_C,stage_H//2,stage_W//2).permute(0,1,3,4,2).reshape(B,-1,4*stage_C)#[B,T,stage_H,stage_W,stage_C]
+        _, stage_C, stage_H, stage_W = out_dict['stages_features'][0].shape
+        stages_features = self.bn_t(out_dict['stages_features'][0])
+        stages_features = stages_features.reshape(B,T,stage_C,stage_H,stage_W).permute(0,1,3,4,2).reshape(B,-1,stage_C)#[B,T,stage_H,stage_W,stage_C]
 
 
         stages_features = stages_features + self.position_embeddings.type_as(stages_features).to(stages_features.device).clone().detach()
-        st_features = self.perceiver(stages_features).squeeze()#[B,4,512]
+        st_features = self.perceiver(stages_features).squeeze().mean(dim=1)#[B,num_latents,512]
+        # text_features = self.text_perceiver[i](out_dict['text_stages_features'][i]).squeeze() if text_features is None else text_features + self.text_perceiver[i](out_dict['text_stages_features'][i]).squeeze()
+        out_dict['image_features'] = self.visual_proj(out_dict['image_features'] + st_features)
 
-            
-        text_features = F.normalize(self.text_proj(out_dict['text_features']),dim=-1)
+        text_features = self.text_proj(out_dict['text_features'] + self.text_perceiver(out_dict['text_tokens']).squeeze().mean(dim=1))
+
         output = {}
-        output['image_features'] = F.normalize(out_dict['image_features'] + st_features,dim=-1)
-        output['text_features'] = text_features
+        output['image_features'] = F.normalize(out_dict['image_features'],dim=-1)
+        output['text_features'] = F.normalize(text_features,dim=-1)
         output['logit_scale'] = self.logit_scale.exp()
         return output
 

@@ -591,8 +591,8 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
                     all_image_features.append(image_features.cpu())
                     all_text_features.append(text_features.cpu())
                     logit_scale = logit_scale.mean()
-                    # logits_per_image = logit_scale * image_features @ text_features.t()
-                    logits_per_image = logit_scale * torch.einsum("mld,nd->mln", image_features, text_features).mean(1)
+                    logits_per_image = logit_scale * image_features @ text_features.t()
+                    # logits_per_image = logit_scale * torch.einsum("mld,nd->mln", image_features, text_features).mean(1)
                     logits_per_text = logits_per_image.t()
 
                     batch_size = images.shape[0]
@@ -682,8 +682,8 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
 
 def get_clip_metrics(image_features, text_features, logit_scale):
     metrics = {}
-    # logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
-    logits_per_image = logit_scale * torch.einsum("mld,nd->mln", image_features, text_features).mean(1).detach().cpu()
+    logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
+    # logits_per_image = logit_scale * torch.einsum("mld,nd->mln", image_features, text_features).mean(1).detach().cpu()
     logits_per_text = logits_per_image.t().detach().cpu()
 
     logits = {"image_to_text": logits_per_image, "text_to_image": logits_per_text}

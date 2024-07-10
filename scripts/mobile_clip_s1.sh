@@ -1,6 +1,6 @@
 cd src
 torchrun --nproc_per_node 1 -m \
-    --master_addr=127.0.0.2 --master_port=29588 \
+    --master_addr=127.0.0.2 --master_port=29568 \
     training.main_video \
     --save-frequency 1 \
     --zeroshot-frequency 1 \
@@ -11,10 +11,10 @@ torchrun --nproc_per_node 1 -m \
     --val-data="/home/alex/data/MSRVTT-videos/test_t_umt_preframes/test_{0..1}.tar"  \
     --val-num-samples 1000 \
     --warmup 0 \
-    --batch-size=64 \
-    --lr=1e-3 \
+    --batch-size=128 \
+    --lr=1e-5 \
     --wd=0.1 \
-    --epochs 64 \
+    --epochs 32 \
     --workers=2 \
     --model MobileCLIP-S1 \
     --pretrained datacompdr \
