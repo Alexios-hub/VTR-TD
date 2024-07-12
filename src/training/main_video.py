@@ -305,7 +305,8 @@ def main(args):
     # params_visual = count_parameters(model_org.visual)
     # params_text = count_parameters(model_org.text)
     model = VideoCLIP(
-        clip_2d=model_org
+        clip_2d=model_org,
+        num_frames=args.num_frames
     ).to(device)
     del model_org
 

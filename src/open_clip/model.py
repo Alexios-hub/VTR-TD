@@ -644,7 +644,9 @@ class AttentionBlock3D(nn.Module):
             norm_layer: nn.Module = nn.BatchNorm3d,
             proj_drop: float = 0.0,
             drop_path: float = 0.0,
-            num_frames: int = 4
+            num_frames: int = 4,
+            use_pos_emb = False,
+            n_positions = 300000
     ):
         """Build Attention Block.
 
@@ -676,9 +678,20 @@ class AttentionBlock3D(nn.Module):
 
         self.layer_scale_2 = nn.Identity()
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.pos_emb = get_sinusoid_encoding_table(n_position=n_positions, d_hid=dim)
+        self.use_pos_emb = use_pos_emb
+        self.num_frames = num_frames
+
 
 
     def forward(self, x):
+        if self.use_pos_emb:
+             B_T, C, H, W = x.shape
+             B = B_T // self.num_frames
+             N = self.num_frames * H * W
+             x = x.reshape(B,self.num_frames,C,H,W).transpose(1,2).flatten(2).transpose(1,2)#[B,N,C]
+             x = x + self.pos_emb[:,:N].type_as(x).to(x.device).clone().detach()
+             x = x.reshape(B*self.num_frames, H, W, C).permute(0,3,1,2)#[B_T,C,H,W]
         x = x + self.drop_path1(self.layer_scale_1(self.token_mixer(self.norm(x))))
         x = x + self.drop_path2(self.layer_scale_2(self.mlp(x)))
         return x
@@ -693,8 +706,7 @@ class AdaptAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.scale = s
         self.use_pos_emb = use_pos_emb
-        self.encoder = AttentionBlock3D(dim=mid_dim,num_frames=num_frames)
-        self.pos_emb = get_sinusoid_encoding_table(n_position=n_positions, d_hid=mid_dim)
+        self.encoder = AttentionBlock3D(dim=mid_dim,num_frames=num_frames,use_pos_emb=use_pos_emb,n_positions=n_positions)
         self.num_frames = num_frames
 
         #initialization
@@ -704,18 +716,9 @@ class AdaptAttention(nn.Module):
         nn.init.zeros_(self.up_proj.bias)
     def forward(self, x):
         original_mlp_x = self.original_mlp(x)#[B*T,C,H,W]
-        B_T, C, H, W = original_mlp_x
-        B = B_T // self.num_frames
-        num_tokens = self.num_frames*H*W
-        x = original_mlp_x.reshape(B, self.num_frames, C, H, W).permute(0,1,3,4,2).reshape(B,num_tokens,C)
-        x = self.down_proj(x)
-        if self.use_pos_emb:
-            x = x + self.pos_emb[:,:num_tokens].type_as(x).to(x.device).clone().detach()
-        x = x.reshape(B*self.num_frames,H,W,C).permute(0,3,1,2)#[B_T,C,H,W]
+        x = self.down_proj(x.transpose(1,3)).transpose(1,3)
         x = self.dropout(self.encoder(x))
-        x = x.transpose(1,3)
-        x = self.up_proj(x)
-        x = x.transpose(1,3)#[B_T,C,H,W]
+        x = self.up_proj(x.transpose(1,3)).transpose(1,3)
         output = original_mlp_x + self.scale * x
         return output
 
@@ -768,6 +771,7 @@ class VideoCLIP(nn.Module):
         super().__init__()
         self.num_frames = num_frames
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
+        print('init_VideoCLIP')
 
         for param in clip_2d.parameters():
             param.requires_grad = False
@@ -790,6 +794,7 @@ class VideoCLIP(nn.Module):
         for block in clip_2d.text.transformer.resblocks:
             block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512, mid_dim=64)
         self.clip_2d = clip_2d
+        print('done.')
 
 
     def forward(
