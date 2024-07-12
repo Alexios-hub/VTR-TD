@@ -641,7 +641,7 @@ class AttentionBlock3D(nn.Module):
             dim: int,
             mlp_ratio: float = 4.0,
             act_layer: nn.Module = nn.GELU,
-            norm_layer: nn.Module = nn.BatchNorm3d,
+            norm_layer: nn.Module = nn.BatchNorm2d,
             proj_drop: float = 0.0,
             drop_path: float = 0.0,
             num_frames: int = 4,
@@ -699,9 +699,11 @@ class AttentionBlock3D(nn.Module):
     
 
 class AdaptAttention(nn.Module):
-    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1, use_pos_emb=False, n_positions = 64*64*64, num_frames=4):
+    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1, use_pos_emb=False, n_positions = 300000, num_frames=4):
         super().__init__()
         self.original_mlp = original_mlp
+        self.in_dim = in_dim
+        self.mid_dim = mid_dim
         self.down_proj = nn.Linear(in_dim, mid_dim)
         self.up_proj = nn.Linear(mid_dim, in_dim)
         self.dropout = nn.Dropout(dropout)
@@ -717,7 +719,7 @@ class AdaptAttention(nn.Module):
         nn.init.zeros_(self.up_proj.bias)
     def forward(self, x):
         original_mlp_x = self.original_mlp(x)#[B*T,C,H,W]
-        x = self.down_proj(x.transpose(1,3)).transpose(1,3)
+        x = self.down_proj(original_mlp_x.transpose(1,3)).transpose(1,3)
         x = self.dropout(self.encoder(x))
         x = self.up_proj(x.transpose(1,3)).transpose(1,3)
         output = original_mlp_x + self.scale * x
@@ -781,9 +783,9 @@ class VideoCLIP(nn.Module):
         dims = [64,128,256,512]
 
         clip_2d.visual.trunk.stem = nn.Sequential(
-            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[0], in_dim=64,mid_dim=32, n_positions=64*64*64, num_frames=self.num_frames),
-            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[1], in_dim=64,mid_dim=32, n_positions=64*64*64, num_frames=self.num_frames),
-            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[2], in_dim=64,mid_dim=32, n_positions=64*64*64, num_frames=self.num_frames)
+            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[0], in_dim=64,mid_dim=32, use_pos_emb=True, n_positions=num_frames*128*128, num_frames=self.num_frames),
+            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[1], in_dim=64,mid_dim=32, num_frames=self.num_frames),
+            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[2], in_dim=64,mid_dim=32, num_frames=self.num_frames)
         )
 
 
