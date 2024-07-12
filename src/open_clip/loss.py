@@ -273,8 +273,6 @@ class VideoDistillClipLoss(ClipLoss):
         Returns:
         Average KL divergence loss across the batch.
         """
-        B = s_image_features.shape[0]
-
 
 
         #ckd loss

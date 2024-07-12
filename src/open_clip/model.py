@@ -26,6 +26,7 @@ from transformers.models.videomae.modeling_videomae import get_sinusoid_encoding
 
 from timm.layers.norm_act import _create_act
 from timm.layers.trace_utils import _assert
+from timm.layers import DropPath, use_fused_attn
 from open_clip.modeling_perceiver_xattn import Perceiver
 @dataclass
 class CLIPVisionCfg:
@@ -366,14 +367,16 @@ class CustomTextCLIP(nn.Module):
         self.text.set_grad_checkpointing(enable)
 
     def encode_image(self, image, normalize: bool = False):
-        features, stages_features = self.visual(image)
-        return (F.normalize(features, dim=-1), stages_features) if normalize else (features, stages_features)
-
+        # features, stages_features = self.visual(image)
+        # return (F.normalize(features, dim=-1), stages_features) if normalize else (features, stages_features)
+        features = self.visual(image)
+        return F.normalize(features, dim=-1) if normalize else features
 
     def encode_text(self, text, normalize: bool = False):
-        # features = self.text(text)
-        features, tokens = self.text(text)
-        return (F.normalize(features, dim=-1),tokens) if normalize else (features,tokens)
+        features = self.text(text)
+        # features, tokens = self.text(text)
+        # return (F.normalize(features, dim=-1),tokens) if normalize else (features,tokens)
+        return F.normalize(features, dim=-1) if normalize else features
 
     def get_logits(self, image, text):
         image_features = self.encode_image(image, normalize=True)
@@ -389,16 +392,18 @@ class CustomTextCLIP(nn.Module):
             image: Optional[torch.Tensor] = None,
             text: Optional[torch.Tensor] = None,
     ):
-        image_features, stages_features = self.encode_image(image, normalize=True) if image is not None else None
-        text_features, text_tokens = self.encode_text(text, normalize=True) if text is not None else None
+        # image_features, stages_features = self.encode_image(image, normalize=True) if image is not None else None
+        # text_features, text_tokens = self.encode_text(text, normalize=True) if text is not None else None
 
+        image_features = self.encode_image(image, normalize=True) if image is not None else None
+        text_features = self.encode_text(text, normalize=True) if text is not None else None
         if self.output_dict:
             out_dict = {
                 "image_features": image_features,
                 "text_features": text_features,
                 "logit_scale": self.logit_scale.exp(),
-                "stages_features":stages_features,
-                "text_tokens":text_tokens
+                # "stages_features":stages_features,
+                # "text_tokens":text_tokens
             }
             if self.logit_bias is not None:
                 out_dict['logit_bias'] = self.logit_bias
@@ -423,23 +428,315 @@ class MLP(nn.Module):
         x = self.fc2(x)
         return x + x_input
 
-
-class myTemporalTransformer(nn.Module):
-    def __init__(self, d_model=512, nhead=8, n_layers=3, n_position=4):
+class AdaptMLP(nn.Module):
+    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1):
         super().__init__()
-        self.num_frames = n_position
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model,nhead=nhead,batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=n_layers)
-        self.position_embeddings = get_sinusoid_encoding_table(n_position=n_position,d_hid=d_model)
+        self.original_mlp = original_mlp
+
+        self.c_fc = nn.Linear(in_dim, mid_dim)
+        self.act = nn.ReLU()
+        self.up_proj = nn.Linear(mid_dim, in_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.scale = s
+
+        #initialization
+        nn.init.kaiming_uniform_(self.c_fc.weight)
+        nn.init.zeros_(self.up_proj.weight)
+        nn.init.zeros_(self.c_fc.bias)
+        nn.init.zeros_(self.up_proj.bias)
+
+
+        #freeze original MLP
+        for _, p in self.original_mlp.named_parameters():
+            p.requires_grad = False
+
+    # def forward(self, x):
+    #     original_mlp_x = self.original_mlp(x)
+    #     if len(x.shape) == 4:#B,C,H,W
+    #         x = x.transpose(1,3)
+    #     down = self.c_fc(x)
+    #     down = self.act(down)
+    #     down = self.dropout(down)
+    #     up = self.up_proj(down)
+    #     if len(up.shape) == 4:
+    #         up = up.transpose(1,3)
+
+    #     output = original_mlp_x + up * self.scale
+    #     return output
+
+    #after FFN
+    def forward(self, x):
+        original_mlp_x = self.original_mlp(x)
+        if len(original_mlp_x.shape) == 4:#B,C,H,W
+            original_mlp_x = original_mlp_x.transpose(1,3)
+        down = self.c_fc(original_mlp_x)
+        down = self.act(down)
+        down = self.dropout(down)
+        up = self.up_proj(down)
+        if len(up.shape) == 4:
+            up = up.transpose(1,3)
+
+        output = original_mlp_x + up * self.scale
+        return output
+
+from timm.models.layers import trunc_normal_
+
+class ConvNormAct(nn.Module):
+    """ Custom ConvNormAct for 3D convolutions. """
+    def __init__(self, in_chs, out_chs, kernel_size, groups, apply_act=True):
+        super().__init__()
+        self.conv = nn.Conv3d(in_chs, out_chs, kernel_size, padding=kernel_size // 2, groups=groups)
+        self.bn = nn.BatchNorm3d(out_chs)
+        self.act = nn.GELU() if apply_act else nn.Identity()
 
     def forward(self, x):
-        #x:[B*T,C,H,W]
-        n, C, H, W = x.shape
-        B = n // self.num_frames
-        x = x.reshape(B, self.num_frames, C, H*W).permute(0, 3, 1, 2) + self.position_embeddings.type_as(x).to(x.device).clone().detach()#[B,H*W,T,C]
-        x = x.transpose(1, 2).reshape(B, self.num_frames*H*W, C)#[B,T*H*W,C]
-        x = self.encoder(x).reshape(B*self.num_frames, H, W, C).permute(0, 3, 1, 2)#[B*T,C,H,W]
+        x = self.conv(x)
+        x = self.bn(x)
+        x = self.act(x)
         return x
+
+class ConvMlp3D(nn.Module):
+    """3D Convolutional FFN Module."""
+
+    def __init__(
+            self,
+            in_chs: int,
+            hidden_channels: Optional[int] = None,
+            out_chs: Optional[int] = None,
+            act_layer: nn.Module = nn.GELU,
+            drop: float = 0.0,
+            num_frames: int=4
+    ) -> None:
+        """Build 3D convolutional FFN module.
+
+        Args:
+            in_chs: Number of input channels.
+            hidden_channels: Number of channels after expansion. Default: None
+            out_chs: Number of output channels. Default: None
+            act_layer: Activation layer. Default: `GELU`
+            drop: Dropout rate. Default: `0.0`.
+        """
+        super().__init__()
+        out_chs = out_chs or in_chs
+        hidden_channels = hidden_channels or in_chs
+        self.conv = ConvNormAct(
+            in_chs,
+            out_chs,
+            kernel_size=7,
+            groups=in_chs,
+            apply_act=False,
+        )
+        self.fc1 = nn.Conv3d(in_chs, hidden_channels, kernel_size=1)
+        self.act = act_layer()
+        self.fc2 = nn.Conv3d(hidden_channels, out_chs, kernel_size=1)
+        self.drop = nn.Dropout(drop)
+        self.apply(self._init_weights)
+        nn.init.zeros_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+        self.num_frames = num_frames
+
+    def _init_weights(self, m: nn.Module) -> None:
+        if isinstance(m, nn.Conv3d):
+            trunc_normal_(m.weight, std=0.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B_T,C,H,W = x.shape
+        B = B_T // self.num_frames
+        x = x.reshape(B, self.num_frames, C, H, W).transpose(1,2)
+        x = self.conv(x)
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        x = x.transpose(1,2).reshape(B*self.num_frames,C,H,W)
+        return x
+
+class Attention3D(nn.Module):
+    """Multi-headed Self Attention module.
+
+    Source modified from:
+    https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
+    """
+    fused_attn: torch.jit.Final[bool]
+
+    def __init__(
+            self,
+            dim: int,
+            head_dim: int = 32,
+            qkv_bias: bool = False,
+            attn_drop: float = 0.0,
+            proj_drop: float = 0.0,
+            num_frames: int = 4
+    ) -> None:
+        """Build MHSA module that can handle 3D or 4D input tensors.
+
+        Args:
+            dim: Number of embedding dimensions.
+            head_dim: Number of hidden dimensions per head. Default: ``32``
+            qkv_bias: Use bias or not. Default: ``False``
+            attn_drop: Dropout rate for attention tensor.
+            proj_drop: Dropout rate for projection tensor.
+        """
+        super().__init__()
+        assert dim % head_dim == 0, "dim should be divisible by head_dim"
+        self.head_dim = head_dim
+        self.num_heads = dim // head_dim
+        self.scale = head_dim ** -0.5
+        self.fused_attn = use_fused_attn()
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+        self.num_frames = num_frames
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B_T, C, H, W = x.shape
+        B = B_T // self.num_frames
+
+        N = self.num_frames * H * W
+        x = x.reshape(B, self.num_frames, C,H,W).transpose(1,2)#[B,C,T,H,W]
+
+        x = x.flatten(2).transpose(-2, -1)  # (B, N, C)
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
+        q, k, v = qkv.unbind(0)  # make torchscript happy (cannot use tensor as tuple)
+
+        if self.fused_attn:
+            x = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.attn_drop.p if self.training else 0.,
+            )
+        else:
+            q = q * self.scale
+            attn = q @ k.transpose(-2, -1)
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            x = attn @ v
+
+        x = x.transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        x = x.transpose(-2, -1).reshape(B, C, self.num_frames, H, W).transpose(1,2).reshape(B*self.num_frames,C,H,W)
+
+        return x
+    
+class AttentionBlock3D(nn.Module):
+    """Implementation of metaformer block with MHSA as token mixer.
+
+    For more details on Metaformer structure, please refer to:
+    `MetaFormer Is Actually What You Need for Vision <https://arxiv.org/pdf/2111.11418.pdf>`_
+    """
+
+    def __init__(
+            self,
+            dim: int,
+            mlp_ratio: float = 4.0,
+            act_layer: nn.Module = nn.GELU,
+            norm_layer: nn.Module = nn.BatchNorm3d,
+            proj_drop: float = 0.0,
+            drop_path: float = 0.0,
+            num_frames: int = 4
+    ):
+        """Build Attention Block.
+
+        Args:
+            dim: Number of embedding dimensions.
+            mlp_ratio: MLP expansion ratio. Default: 4.0
+            act_layer: Activation layer. Default: ``nn.GELU``
+            norm_layer: Normalization layer. Default: ``nn.BatchNorm2d``
+            proj_drop: Dropout rate. Default: 0.0
+            drop_path: Drop path rate. Default: 0.0
+            layer_scale_init_value: Layer scale value at initialization. Default: 1e-5
+        """
+
+        super().__init__()
+
+        self.norm = norm_layer(dim)
+        self.token_mixer = Attention3D(dim=dim,num_frames=num_frames)
+
+        self.layer_scale_1 = nn.Identity()
+        self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+
+        self.mlp = ConvMlp3D(
+            in_chs=dim,
+            hidden_channels=int(dim * mlp_ratio),
+            act_layer=act_layer,
+            drop=proj_drop,
+            num_frames=num_frames,
+        )
+
+        self.layer_scale_2 = nn.Identity()
+        self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+
+
+    def forward(self, x):
+        x = x + self.drop_path1(self.layer_scale_1(self.token_mixer(self.norm(x))))
+        x = x + self.drop_path2(self.layer_scale_2(self.mlp(x)))
+        return x
+    
+
+class AdaptAttention(nn.Module):
+    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1, use_pos_emb=False, n_positions = 300000, num_frames=4):
+        super().__init__()
+        self.original_mlp = original_mlp
+        self.down_proj = nn.Linear(in_dim, mid_dim)
+        self.up_proj = nn.Linear(mid_dim, in_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.scale = s
+        self.use_pos_emb = use_pos_emb
+        self.encoder = AttentionBlock3D(dim=mid_dim,num_frames=num_frames)
+        self.pos_emb = get_sinusoid_encoding_table(n_position=n_positions, d_hid=mid_dim)
+        self.num_frames = num_frames
+
+        #initialization
+        nn.init.kaiming_uniform_(self.down_proj.weight)
+        nn.init.zeros_(self.up_proj.weight)
+        nn.init.zeros_(self.down_proj.bias)
+        nn.init.zeros_(self.up_proj.bias)
+    def forward(self, x):
+        original_mlp_x = self.original_mlp(x)#[B*T,C,H,W]
+        B_T, C, H, W = original_mlp_x
+        B = B_T // self.num_frames
+        num_tokens = self.num_frames*H*W
+        x = original_mlp_x.reshape(B, self.num_frames, C, H, W).permute(0,1,3,4,2).reshape(B,num_tokens,C)
+        x = self.down_proj(x)
+        if self.use_pos_emb:
+            x = x + self.pos_emb[:,:num_tokens].type_as(x).to(x.device).clone().detach()
+        x = x.reshape(B*self.num_frames,H,W,C).permute(0,3,1,2)#[B_T,C,H,W]
+        x = self.dropout(self.encoder(x))
+        x = x.transpose(1,3)
+        x = self.up_proj(x)
+        x = x.transpose(1,3)#[B_T,C,H,W]
+        output = original_mlp_x + self.scale * x
+        return output
+
+
+
+# class myTemporalTransformer(nn.Module):
+#     def __init__(self, d_model=512, nhead=8, n_layers=3, n_position=4):
+#         super().__init__()
+#         self.num_frames = n_position
+#         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model,nhead=nhead,batch_first=True)
+#         self.encoder = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=n_layers)
+#         self.position_embeddings = get_sinusoid_encoding_table(n_position=n_position,d_hid=d_model)
+
+#     def forward(self, x):
+#         #x:[B*T,C,H,W]
+#         n, C, H, W = x.shape
+#         B = n // self.num_frames
+#         x = x.reshape(B, self.num_frames, C, H*W).permute(0, 3, 1, 2) + self.position_embeddings.type_as(x).to(x.device).clone().detach()#[B,H*W,T,C]
+#         x = x.transpose(1, 2).reshape(B, self.num_frames*H*W, C)#[B,T*H*W,C]
+#         x = self.encoder(x).reshape(B*self.num_frames, H, W, C).permute(0, 3, 1, 2)#[B*T,C,H,W]
+#         return x
 
 def patchify_feature_map(x):
     """
@@ -474,27 +771,25 @@ class VideoCLIP(nn.Module):
 
         for param in clip_2d.parameters():
             param.requires_grad = False
-        self.clip_2d = clip_2d
-        # self.text_proj = nn.Identity()
-        # self.text_proj = MLP(512,512*4,512)
-        # self.visual_proj = MLP(512,512*4,512)
-        self.text_proj = nn.Linear(512,512,bias=False)
-        self.visual_proj = nn.Linear(512,512,bias=False)
 
-        
-        self.perceiver = Perceiver(dim=512,
-                                   k_v_dim=128,
-                                   depth=1,
-                                   num_latents = 64
-                                   )
-        self.position_embeddings = get_sinusoid_encoding_table(n_position=4*32*32,d_hid=128)
-        self.bn_t = nn.BatchNorm2d(128)
-        self.text_perceiver = Perceiver(
-            dim=512,
-            k_v_dim=512,
-            depth=1,
-            num_latents=64
+        # clip_2d.logit_scale.requires_grad = False
+
+        dims = [64,128,256,512]
+
+        clip_2d.visual.trunk.stem = nn.Sequential(
+            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[0], in_dim=64,mid_dim=32, use_pos_emb=True, n_positions=64*64*64, num_frames=self.num_frames),
+            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[1], in_dim=64,mid_dim=32, n_positions=64*64*64, num_frames=self.num_frames),
+            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[2], in_dim=64,mid_dim=32, n_positions=64*64*64, num_frames=self.num_frames)
         )
+
+
+        for stage, dim in zip(clip_2d.visual.trunk.stages,dims):
+            for block in stage.blocks:
+                block.mlp = AdaptAttention(original_mlp=block.mlp,in_dim=dim,mid_dim=max(dim//4,32),num_frames=num_frames)
+        
+        for block in clip_2d.text.transformer.resblocks:
+            block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512, mid_dim=64)
+        self.clip_2d = clip_2d
 
 
     def forward(
@@ -508,8 +803,8 @@ class VideoCLIP(nn.Module):
         B,T,C,H,W = video.shape#[B,4,3,224,224]
 
         video = video.reshape(B*T,C,H,W)
-        with torch.no_grad():
-            out_dict = self.clip_2d(video, text)
+        # with torch.no_grad():
+        out_dict = self.clip_2d(video, text)
         # if isinstance(out_dict['image_features'],tuple):
         #     out_dict.update({
         #         'image_features':out_dict['image_features'][0],#[B*T,512]
@@ -517,21 +812,10 @@ class VideoCLIP(nn.Module):
         #     })
         out_dict['image_features'] = out_dict['image_features'].view(B,T,-1).mean(dim=1)
 
-        _, stage_C, stage_H, stage_W = out_dict['stages_features'][0].shape
-        stages_features = self.bn_t(out_dict['stages_features'][0])
-        stages_features = stages_features.reshape(B,T,stage_C,stage_H,stage_W).permute(0,1,3,4,2).reshape(B,-1,stage_C)#[B,T,stage_H,stage_W,stage_C]
-
-
-        stages_features = stages_features + self.position_embeddings.type_as(stages_features).to(stages_features.device).clone().detach()
-        st_features = self.perceiver(stages_features).squeeze().mean(dim=1)#[B,num_latents,512]
-        # text_features = self.text_perceiver[i](out_dict['text_stages_features'][i]).squeeze() if text_features is None else text_features + self.text_perceiver[i](out_dict['text_stages_features'][i]).squeeze()
-        out_dict['image_features'] = self.visual_proj(out_dict['image_features'] + st_features)
-
-        text_features = self.text_proj(out_dict['text_features'] + self.text_perceiver(out_dict['text_tokens']).squeeze().mean(dim=1))
 
         output = {}
         output['image_features'] = F.normalize(out_dict['image_features'],dim=-1)
-        output['text_features'] = F.normalize(text_features,dim=-1)
+        output['text_features'] = F.normalize(out_dict['text_features'],dim=-1)
         output['logit_scale'] = self.logit_scale.exp()
         return output
 

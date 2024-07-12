@@ -1,6 +1,7 @@
 import glob
 import logging
 import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 import re
 import subprocess
 import sys
@@ -244,7 +245,7 @@ def main(args):
     )
 
     model_org.eval()
-    model_org.text.output_tokens = True
+    # model_org.text.output_tokens = True
     preprocess_train = transforms.Compose([
             transforms.RandomResizedCrop(
                 size=(256, 256), 
@@ -271,8 +272,38 @@ def main(args):
             transforms.ConvertImageDtype(torch.float),
             transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])
     ])
-    params_visual = count_parameters(model_org.visual)
-    params_text = count_parameters(model_org.text)
+
+
+    # preprocess_train = transforms.Compose([
+    #         transforms.RandomResizedCrop(
+    #             size=(224, 224), 
+    #             scale=(0.9, 1.0), 
+    #             ratio=(0.75, 1.3333), 
+    #             interpolation=transforms.InterpolationMode.BICUBIC,
+    #             antialias=True
+    #             ),
+    #         transforms.ConvertImageDtype(torch.float),
+    #         transforms.Normalize(
+    #                 mean=[0.48145466, 0.4578275, 0.40821073], 
+    #                 std=[0.26862954, 0.26130258, 0.27577711]
+    #             )
+
+    # ])
+    # preprocess_val = transforms.Compose([
+    #         transforms.Resize(
+    #             size=224,
+    #             interpolation=transforms.InterpolationMode.BICUBIC,
+    #             max_size=None,
+    #             antialias=True
+    #             ),
+    #         transforms.CenterCrop(size=(224, 224)),
+    #         transforms.ConvertImageDtype(torch.float),
+    #         transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+    # ])
+
+
+    # params_visual = count_parameters(model_org.visual)
+    # params_text = count_parameters(model_org.text)
     model = VideoCLIP(
         clip_2d=model_org
     ).to(device)
@@ -323,8 +354,8 @@ def main(args):
     if is_master(args):
         logging.info("Model:")
         logging.info(f"{str(model)}")
-        logging.info(f"Visual Parameters:{params_visual}M")
-        logging.info(f"Text Parameters:{params_text}M")
+        # logging.info(f"Visual Parameters:{params_visual}M")
+        # logging.info(f"Text Parameters:{params_text}M")
         logging.info("Params:")
         params_file = os.path.join(args.logs, args.name, "params.txt")
         with open(params_file, "w") as f:
@@ -476,8 +507,8 @@ def main(args):
     for epoch in range(start_epoch, args.epochs):
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
-        # if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')) and epoch == start_epoch:
-        #     evaluate(model, data, 0, args, tb_writer=writer, tokenizer=tokenizer)
+        if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')) and epoch == start_epoch:
+            evaluate(model, data, 0, args, tb_writer=writer, tokenizer=tokenizer)
 
         train_video_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist_model, args, tb_writer=writer)
         completed_epoch = epoch + 1
