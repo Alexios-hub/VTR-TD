@@ -11,7 +11,7 @@ torchrun --nproc_per_node 2 -m \
     --val-data="/home/alex/data/MSRVTT-videos/test_t_umt_preframes_12/test_{0..1}.tar"  \
     --val-num-samples 1000 \
     --warmup 5000 \
-    --batch-size=32 \
+    --batch-size=8 \
     --lr=1e-7 \
     --wd=0.1 \
     --epochs 32 \

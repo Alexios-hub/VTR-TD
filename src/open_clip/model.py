@@ -565,7 +565,7 @@ class Attention3D(nn.Module):
     def __init__(
             self,
             dim: int,
-            head_dim: int = 32,
+            head_dim: int = 8,
             qkv_bias: bool = False,
             attn_drop: float = 0.0,
             proj_drop: float = 0.0,
@@ -783,15 +783,15 @@ class VideoCLIP(nn.Module):
         dims = [64,128,256,512]
 
         clip_2d.visual.trunk.stem = nn.Sequential(
-            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[0], in_dim=64,mid_dim=32, use_pos_emb=True, n_positions=num_frames*128*128, num_frames=self.num_frames),
-            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[1], in_dim=64,mid_dim=32, num_frames=self.num_frames),
-            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[2], in_dim=64,mid_dim=32, num_frames=self.num_frames)
+            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[0], in_dim=64,mid_dim=16, use_pos_emb=True, n_positions=num_frames*128*128, num_frames=self.num_frames),
+            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[1], in_dim=64,mid_dim=16, num_frames=self.num_frames),
+            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[2], in_dim=64,mid_dim=16, num_frames=self.num_frames)
         )
 
 
         for stage, dim in zip(clip_2d.visual.trunk.stages,dims):
             for block in stage.blocks:
-                block.mlp = AdaptAttention(original_mlp=block.mlp,in_dim=dim,mid_dim=max(dim//4,32),num_frames=num_frames)
+                block.mlp = AdaptAttention(original_mlp=block.mlp,in_dim=dim,mid_dim=dim//4,num_frames=num_frames)
         
         for block in clip_2d.text.transformer.resblocks:
             block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512, mid_dim=64)
