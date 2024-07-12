@@ -678,7 +678,8 @@ class AttentionBlock3D(nn.Module):
 
         self.layer_scale_2 = nn.Identity()
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.pos_emb = get_sinusoid_encoding_table(n_position=n_positions, d_hid=dim)
+        if use_pos_emb:
+            self.pos_emb = get_sinusoid_encoding_table(n_position=n_positions, d_hid=dim)
         self.use_pos_emb = use_pos_emb
         self.num_frames = num_frames
 
@@ -698,7 +699,7 @@ class AttentionBlock3D(nn.Module):
     
 
 class AdaptAttention(nn.Module):
-    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1, use_pos_emb=False, n_positions = 300000, num_frames=4):
+    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1, use_pos_emb=False, n_positions = 64*64*64, num_frames=4):
         super().__init__()
         self.original_mlp = original_mlp
         self.down_proj = nn.Linear(in_dim, mid_dim)
@@ -771,7 +772,6 @@ class VideoCLIP(nn.Module):
         super().__init__()
         self.num_frames = num_frames
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
-        print('init_VideoCLIP')
 
         for param in clip_2d.parameters():
             param.requires_grad = False
@@ -794,7 +794,6 @@ class VideoCLIP(nn.Module):
         for block in clip_2d.text.transformer.resblocks:
             block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512, mid_dim=64)
         self.clip_2d = clip_2d
-        print('done.')
 
 
     def forward(
