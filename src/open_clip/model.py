@@ -781,7 +781,7 @@ class VideoCLIP(nn.Module):
         dims = [64,128,256,512]
 
         clip_2d.visual.trunk.stem = nn.Sequential(
-            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[0], in_dim=64,mid_dim=32, use_pos_emb=True, n_positions=64*64*64, num_frames=self.num_frames),
+            AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[0], in_dim=64,mid_dim=32, n_positions=64*64*64, num_frames=self.num_frames),
             AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[1], in_dim=64,mid_dim=32, n_positions=64*64*64, num_frames=self.num_frames),
             AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[2], in_dim=64,mid_dim=32, n_positions=64*64*64, num_frames=self.num_frames)
         )
