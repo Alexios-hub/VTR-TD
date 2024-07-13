@@ -796,7 +796,7 @@ class AdapterConv(nn.Module):
         x = x.permute(0,2,3,4,1)#[B,T,H,W,C_adapter]
         x = self.fc2(x)#[B,T,H,W,C]
         x = x.permute(0,1,4,2,3).contiguous().view(BT,C,H,W)
-        x_id += self.scale * x
+        x_id = x_id + self.scale * x
         return x_id
 
 class ResAdapterBlock(nn.Module):
