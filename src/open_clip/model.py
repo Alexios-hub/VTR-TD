@@ -843,8 +843,8 @@ class VideoCLIP(nn.Module):
         clip_2d.visual.trunk.final_conv = ResAdapterBlock(original_block=clip_2d.visual.trunk.final_conv,d_model=512,adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         clip_2d.visual.trunk.head = ResAdapterBlock(original_block=clip_2d.visual.trunk.head,d_model=1024,adapter_channels=512,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         
-        for block in clip_2d.text.transformer.resblocks:
-            block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=1.0)
+        # for block in clip_2d.text.transformer.resblocks:
+        #     block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=1.0)
         
         self.clip_2d = clip_2d
 
