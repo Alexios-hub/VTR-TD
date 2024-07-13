@@ -12,7 +12,7 @@ torchrun --nproc_per_node 2 -m \
     --val-num-samples 1000 \
     --warmup 0 \
     --batch-size=64 \
-    --lr=1e-3 \
+    --lr=5e-4 \
     --wd=0.2 \
     --epochs 32 \
     --workers=2 \
