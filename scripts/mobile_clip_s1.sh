@@ -6,9 +6,9 @@ torchrun --nproc_per_node 2 -m \
     --zeroshot-frequency 1 \
     --report-to tensorboard \
     --dataset-type webdataset \
-    --train-data="/home/alex/data/MSRVTT-videos/train_t_umt_preframes/train_{0..8}.tar"  \
+    --train-data="/home/user/data/MSRVTT-videos/train_t_umt_preframes_12/train_{0..8}.tar"  \
     --train-num-samples 9000 \
-    --val-data="/home/alex/data/MSRVTT-videos/test_t_umt_preframes/test_{0..1}.tar"  \
+    --val-data="/home/user/data/MSRVTT-videos/test_t_umt_preframes_12/test_{0..1}.tar"  \
     --val-num-samples 1000 \
     --warmup 5000 \
     --batch-size=64 \
@@ -20,7 +20,7 @@ torchrun --nproc_per_node 2 -m \
     --pretrained datacompdr \
     --distill-model umt \
     --distill-pretrained l16_25m \
-    --num-frames 4 \
+    --num-frames 12 \
     --distill-ckd-alpha 1.0 \
     --distill-temporal-alpha 0.0 \
     --distill-text-fd-alpha 0.0 \
