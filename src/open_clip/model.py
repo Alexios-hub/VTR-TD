@@ -764,6 +764,54 @@ def patchify_feature_map(x):
     
     return patchified_x
 
+class AdapterConv(nn.Module):
+
+    def __init__(self, in_channels, adapter_channels, kernel_size, num_frames=4, scale=1.0):
+        super().__init__()
+        self.num_frames = num_frames
+        self.scale = scale
+        self.fc1 = nn.Linear(in_channels, adapter_channels)
+        self.conv = nn.Conv3d(
+            adapter_channels, adapter_channels,
+            kernel_size=kernel_size,
+            stride=(1, 1, 1),
+            padding=tuple(x // 2 for x in kernel_size),
+            groups=adapter_channels,
+        )
+        self.fc2 = nn.Linear(adapter_channels, in_channels)
+        nn.init.constant_(self.conv.weight, 0.)
+        nn.init.constant_(self.conv.bias, 0.)
+        nn.init.constant_(self.fc1.bias, 0.)
+        nn.init.constant_(self.fc2.bias, 0.)
+
+    def forward(self, x):
+        BT, C, H, W = x.shape
+
+        B = BT // self.num_frames
+        x_id = x
+        x = x.view(B, self.num_frames, C, H, W).permute(0,1,3,4,2).contiguous()#[B,T,H,W,C]
+        x = self.fc1(x)
+        x = x.permute(0,4,1,2,3).contiguous()#[B,C_adapter,T,H,W]
+        x = self.conv(x)
+        x = x.permute(0,2,3,4,1)#[B,T,H,W,C_adapter]
+        x = self.fc2(x)#[B,T,H,W,C]
+        x = x.permute(0,1,4,2,3).contiguous().view(BT,C,H,W)
+        x_id += self.scale * x
+        return x_id
+
+class ResAdapterBlock(nn.Module):
+    def __init__(self, original_block, d_model, adapter_channels, kernel_size, num_frames=4, scale=1.0):
+        super().__init__()
+        self.original_block = original_block
+        for _, p in self.original_block.named_parameters():
+            p.requires_grad = False
+        self.adapter = AdapterConv(in_channels=d_model,adapter_channels=adapter_channels,kernel_size=kernel_size,num_frames=num_frames,scale=scale)
+
+    def forward(self,x):
+        x = self.adapter(x)
+        x = self.original_block(x)
+        return x
+        
 class VideoCLIP(nn.Module):
     def __init__(
             self,
@@ -788,19 +836,16 @@ class VideoCLIP(nn.Module):
         #     AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[2], in_dim=64,mid_dim=32, num_frames=self.num_frames)
         # )
 
-        # for stage, dim in zip(clip_2d.visual.trunk.stages,dims):
-        #     for block in stage.blocks:
-        #         block.mlp = AdaptAttention(original_mlp=block.mlp,in_dim=dim,mid_dim=max(dim//4,32),num_frames=num_frames)
-
-        # clip_2d.visual.trunk.stem[2] = AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[2], in_dim=64,mid_dim=32,use_pos_emb=True,n_positions=num_frames*64*64, num_frames=self.num_frames)
         for stage, dim in zip(clip_2d.visual.trunk.stages,dims):
-            if dim == 64:
-                stage.blocks[len(stage.blocks)-1].mlp = AdaptAttention(original_mlp=stage.blocks[len(stage.blocks)-1].mlp,in_dim=dim,mid_dim=64,use_pos_emb=True,n_positions=num_frames*64*64,num_frames=num_frames)
-            else:
-                stage.blocks[len(stage.blocks)-1].mlp = AdaptAttention(original_mlp=stage.blocks[len(stage.blocks)-1].mlp,in_dim=dim,mid_dim=64,num_frames=num_frames)
+            for block in stage.blocks:
+                block = ResAdapterBlock(original_block=block, d_model=dim, adapter_channels=dim//2,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
+        
+        clip_2d.visual.trunk.final_conv = ResAdapterBlock(original_block=clip_2d.visual.trunk.final_conv,d_model=512,adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
+        clip_2d.visual.trunk.head = ResAdapterBlock(original_block=clip_2d.visual.trunk.head,d_model=1024,adapter_channels=512,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         
         for block in clip_2d.text.transformer.resblocks:
-            block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512, mid_dim=64)
+            block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=1.0)
+        
         self.clip_2d = clip_2d
 
 
