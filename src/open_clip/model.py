@@ -777,8 +777,6 @@ class AdapterConv(nn.Module):
             groups=adapter_channels,
         )
 
-        self.norm = nn.BatchNorm3d(num_features=adapter_channels)
-        self.act = nn.ReLU()
 
         self.fc2 = nn.Linear(adapter_channels, in_channels)
         nn.init.constant_(self.conv.weight, 0.)
@@ -795,10 +793,6 @@ class AdapterConv(nn.Module):
         x = self.fc1(x)
         x = x.permute(0,4,1,2,3).contiguous()#[B,C_adapter,T,H,W]
         x = self.conv(x)
-
-        x = self.norm(x)
-        x = self.act(x)
-
         x = x.permute(0,2,3,4,1)#[B,T,H,W,C_adapter]
         x = self.fc2(x)#[B,T,H,W,C]
         x = x.permute(0,1,4,2,3).contiguous().view(BT,C,H,W)
