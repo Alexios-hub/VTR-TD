@@ -565,7 +565,7 @@ class Attention3D(nn.Module):
     def __init__(
             self,
             dim: int,
-            head_dim: int = 8,
+            head_dim: int = 32,
             qkv_bias: bool = False,
             attn_drop: float = 0.0,
             proj_drop: float = 0.0,
@@ -641,7 +641,7 @@ class AttentionBlock3D(nn.Module):
             dim: int,
             mlp_ratio: float = 4.0,
             act_layer: nn.Module = nn.GELU,
-            norm_layer: nn.Module = nn.BatchNorm2d,
+            norm_layer: nn.Module = nn.BatchNorm3d,
             proj_drop: float = 0.0,
             drop_path: float = 0.0,
             num_frames: int = 4,
@@ -683,8 +683,6 @@ class AttentionBlock3D(nn.Module):
         self.use_pos_emb = use_pos_emb
         self.num_frames = num_frames
 
-
-
     def forward(self, x):
         if self.use_pos_emb:
              B_T, C, H, W = x.shape
@@ -693,7 +691,7 @@ class AttentionBlock3D(nn.Module):
              x = x.reshape(B,self.num_frames,C,H,W).transpose(1,2).flatten(2).transpose(1,2)#[B,N,C]
              x = x + self.pos_emb[:,:N].type_as(x).to(x.device).clone().detach()
              x = x.reshape(B*self.num_frames, H, W, C).permute(0,3,1,2)#[B_T,C,H,W]
-        x = x + self.drop_path1(self.layer_scale_1(self.token_mixer(self.norm(x))))
+        x = x + self.drop_path1(self.layer_scale_1(self.token_mixer(self.norm(x.reshape(B,self.num_frames,C,H,W).transpose(1,2)).transpose(1,2).reshape(B*self.num_frames,C,H,W))))
         x = x + self.drop_path2(self.layer_scale_2(self.mlp(x)))
         return x
     
@@ -778,6 +776,10 @@ class AdapterConv(nn.Module):
             padding=tuple(x // 2 for x in kernel_size),
             groups=adapter_channels,
         )
+
+        self.norm = nn.BatchNorm3d(num_features=adapter_channels)
+        self.act = nn.ReLU()
+
         self.fc2 = nn.Linear(adapter_channels, in_channels)
         nn.init.constant_(self.conv.weight, 0.)
         nn.init.constant_(self.conv.bias, 0.)
@@ -793,6 +795,10 @@ class AdapterConv(nn.Module):
         x = self.fc1(x)
         x = x.permute(0,4,1,2,3).contiguous()#[B,C_adapter,T,H,W]
         x = self.conv(x)
+
+        x = self.norm(x)
+        x = self.act(x)
+
         x = x.permute(0,2,3,4,1)#[B,T,H,W,C_adapter]
         x = self.fc2(x)#[B,T,H,W,C]
         x = x.permute(0,1,4,2,3).contiguous().view(BT,C,H,W)
@@ -842,9 +848,12 @@ class VideoCLIP(nn.Module):
         
         clip_2d.visual.trunk.final_conv = ResAdapterBlock(original_block=clip_2d.visual.trunk.final_conv,d_model=512,adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         clip_2d.visual.trunk.head = ResAdapterBlock(original_block=clip_2d.visual.trunk.head,d_model=1024,adapter_channels=512,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
-        
-        clip_2d.visual.trunk.final_conv = AdaptAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=512,use_pos_emb=True,n_positions=num_frames*8*8,num_frames=num_frames)
-        
+        clip_2d.visual.trunk.final_conv = nn.Sequential(
+            clip_2d.visual.trunk.final_conv,
+            AttentionBlock3D(dim=1024, mlp_ratio=3, num_frames=num_frames, use_pos_emb=True, n_positions=num_frames*8*8)
+        )
+
+                
         for block in clip_2d.text.transformer.resblocks:
             block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=1.0)
         
