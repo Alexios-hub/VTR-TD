@@ -836,15 +836,21 @@ class VideoCLIP(nn.Module):
         #     AdaptAttention(original_mlp=clip_2d.visual.trunk.stem[2], in_dim=64,mid_dim=32, num_frames=self.num_frames)
         # )
         
-        for stage, dim in zip(clip_2d.visual.trunk.stages,dims):
+        # for stage, dim in zip(clip_2d.visual.trunk.stages,dims):
+        #     for block in stage.blocks:
+        #         block = ResAdapterBlock(original_block=block, d_model=dim, adapter_channels=dim//2,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
+
+        for stage, dim in zip([clip_2d.visual.trunk.stages[0],clip_2d.visual.trunk.stages[1],clip_2d.visual.trunk.stages[2]],[64,128,256]):
             for block in stage.blocks:
                 block = ResAdapterBlock(original_block=block, d_model=dim, adapter_channels=dim//2,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
-        
+        for i in range(len(clip_2d.visual.trunk.stages[3].blocks)-1):
+            clip_2d.visual.trunk.stages[3].blocks[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[3].blocks[i], d_model=512, adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
+        clip_2d.visual.trunk.stages[3] = AdaptAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,n_positions=num_frames*8*8,num_frames=num_frames)
+
         clip_2d.visual.trunk.final_conv = ResAdapterBlock(original_block=clip_2d.visual.trunk.final_conv,d_model=512,adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         clip_2d.visual.trunk.head = ResAdapterBlock(original_block=clip_2d.visual.trunk.head,d_model=1024,adapter_channels=512,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         
-        clip_2d.visual.trunk.stages[3] = AdaptAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,n_positions=num_frames*8*8,num_frames=num_frames)
-
+        
                 
         for block in clip_2d.text.transformer.resblocks:
             block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=1.0)
