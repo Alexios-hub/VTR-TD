@@ -628,6 +628,75 @@ class Attention3D(nn.Module):
         x = x.transpose(-2, -1).reshape(B, C, self.num_frames, H, W).transpose(1,2).reshape(B*self.num_frames,C,H,W)
 
         return x
+
+class ShapedAttention3D(nn.Module):
+    """Shaped Multi-headed Self Attention module.
+
+    Source modified from:
+    """
+    fused_attn: torch.jit.Final[bool]
+
+    def __init__(
+            self,
+            dim: int,
+            head_dim: int = 32,
+            qkv_bias: bool = False,
+            attn_drop: float = 0.0,
+            num_frames: int = 4,
+            width: int = 8
+    ) -> None:
+        """Build MHSA module that can handle 3D or 4D input tensors.
+
+        Args:
+            dim: Number of embedding dimensions.
+            head_dim: Number of hidden dimensions per head. Default: ``32``
+            qkv_bias: Use bias or not. Default: ``False``
+            attn_drop: Dropout rate for attention tensor.
+            proj_drop: Dropout rate for projection tensor.
+        """
+        super().__init__()
+        assert dim % head_dim == 0, "dim should be divisible by head_dim"
+        self.head_dim = head_dim
+        self.num_heads = dim // head_dim
+        self.scale = head_dim ** -0.5
+        self.qk = nn.Linear(dim, dim * 2, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.num_frames = num_frames
+
+        n_c = num_frames * width * width
+        self.alpha = nn.Parameter(torch.zeros((1, self.num_heads, 1, 1)))
+        self.beta = nn.Parameter(torch.zeros((1, self.num_heads, 1, 1)))
+        self.gamma = nn.Parameter(torch.zeros((1, self.num_heads, 1, 1)))
+
+        self.register_buffer('C',torch.ones((n_c, n_c)) / n_c)
+        self.register_buffer('it',torch.eye(n_c))
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B_T, C, H, W = x.shape
+        B = B_T // self.num_frames
+
+        N = self.num_frames * H * W
+        x = x.reshape(B, self.num_frames, C,H,W).transpose(1,2)#[B,C,T,H,W]
+
+        x = x.flatten(2).transpose(-2, -1)  # (B, N, C)
+        qk = (
+            self.qk(x)
+            .reshape(B, N, 2, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
+        q, k = qk.unbind(0)  # make torchscript happy (cannot use tensor as tuple)
+        v = x.reshape(B, N, 1, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4).squeeze()
+
+        q = q * self.scale
+        attn = q @ k.transpose(-2, -1)
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+        attn = self.alpha * self.it + self.beta * attn - self.gamma * self.C
+        x = attn @ v
+        x = x.transpose(1, 2).reshape(B, N, C)
+
+        x = x.transpose(-2, -1).reshape(B, C, self.num_frames, H, W).transpose(1,2).reshape(B*self.num_frames,C,H,W)
+
+        return x
     
 class AttentionBlock3D(nn.Module):
     """Implementation of metaformer block with MHSA as token mixer.
@@ -695,7 +764,74 @@ class AttentionBlock3D(nn.Module):
         x = x + self.drop_path2(self.layer_scale_2(self.mlp(x)))
         return x
     
+class ParallelAttentionBlock3D(nn.Module):
+    """Implementation of metaformer block with MHSA as token mixer.
 
+    For more details on Metaformer structure, please refer to:
+    `MetaFormer Is Actually What You Need for Vision <https://arxiv.org/pdf/2111.11418.pdf>`_
+    """
+
+    def __init__(
+            self,
+            dim: int,
+            mlp_ratio: float = 4.0,
+            act_layer: nn.Module = nn.GELU,
+            norm_layer: nn.Module = nn.BatchNorm3d,
+            proj_drop: float = 0.0,
+            drop_path: float = 0.0,
+            num_frames: int = 4,
+            use_pos_emb = False,
+            n_positions = 300000
+    ):
+        """Build Attention Block.
+
+        Args:
+            dim: Number of embedding dimensions.
+            mlp_ratio: MLP expansion ratio. Default: 4.0
+            act_layer: Activation layer. Default: ``nn.GELU``
+            norm_layer: Normalization layer. Default: ``nn.BatchNorm2d``
+            proj_drop: Dropout rate. Default: 0.0
+            drop_path: Drop path rate. Default: 0.0
+            layer_scale_init_value: Layer scale value at initialization. Default: 1e-5
+        """
+
+        super().__init__()
+
+        self.norm = norm_layer(dim)
+        self.token_mixer = ShapedAttention3D(dim=dim,num_frames=num_frames)
+
+        self.layer_scale_1 = nn.Identity()
+        self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+
+        self.mlp = ConvMlp3D(
+            in_chs=dim,
+            hidden_channels=int(dim * mlp_ratio),
+            act_layer=act_layer,
+            drop=proj_drop,
+            num_frames=num_frames,
+        )
+
+        self.layer_scale_2 = nn.Identity()
+        self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        if use_pos_emb:
+            self.pos_emb = get_sinusoid_encoding_table(n_position=n_positions, d_hid=dim)
+        self.use_pos_emb = use_pos_emb
+        self.num_frames = num_frames
+
+    def forward(self, x):
+        if self.use_pos_emb:
+             B_T, C, H, W = x.shape
+             B = B_T // self.num_frames
+             N = self.num_frames * H * W
+             x = x.reshape(B,self.num_frames,C,H,W).transpose(1,2).flatten(2).transpose(1,2)#[B,N,C]
+             x = x + self.pos_emb[:,:N].type_as(x).to(x.device).clone().detach()
+             x = x.reshape(B*self.num_frames, H, W, C).permute(0,3,1,2)#[B_T,C,H,W]
+        x_norm = self.norm(x.reshape(B,self.num_frames,C,H,W).transpose(1,2)).transpose(1,2).reshape(B*self.num_frames,C,H,W)
+        x_att = self.drop_path1(self.layer_scale_1(self.token_mixer(x_norm)))
+        x_mlp = self.drop_path2(self.layer_scale_2(self.mlp(x_norm)))
+        out = x_att + x_mlp
+        return out
+    
 class AdaptAttention(nn.Module):
     def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1, use_pos_emb=False, n_positions = 300000, num_frames=4):
         super().__init__()
@@ -723,6 +859,32 @@ class AdaptAttention(nn.Module):
         output = original_mlp_x + self.scale * x
         return output
 
+class AdaptParallelAttention(nn.Module):
+    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1, use_pos_emb=False, n_positions = 300000, num_frames=4):
+        super().__init__()
+        self.original_mlp = original_mlp
+        self.in_dim = in_dim
+        self.mid_dim = mid_dim
+        self.down_proj = nn.Linear(in_dim, mid_dim)
+        self.up_proj = nn.Linear(mid_dim, in_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.scale = s
+        self.use_pos_emb = use_pos_emb
+        self.encoder = ParallelAttentionBlock3D(dim=mid_dim,num_frames=num_frames,use_pos_emb=use_pos_emb,n_positions=n_positions)
+        self.num_frames = num_frames
+
+        #initialization
+        nn.init.kaiming_uniform_(self.down_proj.weight)
+        nn.init.zeros_(self.up_proj.weight)
+        nn.init.zeros_(self.down_proj.bias)
+        nn.init.zeros_(self.up_proj.bias)
+    def forward(self, x):
+        original_mlp_x = self.original_mlp(x)#[B*T,C,H,W]
+        x = self.down_proj(original_mlp_x.transpose(1,3)).transpose(1,3)
+        x = self.dropout(self.encoder(x))
+        x = self.up_proj(x.transpose(1,3)).transpose(1,3)
+        output = original_mlp_x + self.scale * x
+        return output
 
 
 # class myTemporalTransformer(nn.Module):
@@ -845,7 +1007,8 @@ class VideoCLIP(nn.Module):
                 block = ResAdapterBlock(original_block=block, d_model=dim, adapter_channels=dim//2,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
         for i in range(len(clip_2d.visual.trunk.stages[3].blocks)-1):
             clip_2d.visual.trunk.stages[3].blocks[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[3].blocks[i], d_model=512, adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
-        clip_2d.visual.trunk.stages[3] = AdaptAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,n_positions=num_frames*8*8,num_frames=num_frames)
+        # clip_2d.visual.trunk.stages[3] = AdaptAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,n_positions=num_frames*8*8,num_frames=num_frames)
+        clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,n_positions=num_frames*8*8,num_frames=num_frames)
 
         clip_2d.visual.trunk.final_conv = ResAdapterBlock(original_block=clip_2d.visual.trunk.final_conv,d_model=512,adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         clip_2d.visual.trunk.head = ResAdapterBlock(original_block=clip_2d.visual.trunk.head,d_model=1024,adapter_channels=512,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
