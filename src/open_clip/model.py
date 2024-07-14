@@ -842,10 +842,8 @@ class VideoCLIP(nn.Module):
         
         clip_2d.visual.trunk.final_conv = ResAdapterBlock(original_block=clip_2d.visual.trunk.final_conv,d_model=512,adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         clip_2d.visual.trunk.head = ResAdapterBlock(original_block=clip_2d.visual.trunk.head,d_model=1024,adapter_channels=512,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
-        clip_2d.visual.trunk.final_conv = nn.Sequential(
-            clip_2d.visual.trunk.final_conv,
-            AttentionBlock3D(dim=1024, mlp_ratio=3, num_frames=num_frames, use_pos_emb=True, n_positions=num_frames*8*8)
-        )
+        
+        clip_2d.visual.trunk.stages[3] = AdaptAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,n_positions=num_frames*8*8,num_frames=num_frames)
 
                 
         for block in clip_2d.text.transformer.resblocks:
