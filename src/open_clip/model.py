@@ -992,16 +992,16 @@ class VideoCLIP(nn.Module):
 
         dims = [64,128,256,512]
         
-        # for stage, dim in zip(clip_2d.visual.trunk.stages,dims):
-        #     for i in range(len(stage.blocks)):
-        #         stage.blocks[i] = ResAdapterBlock(original_block=stage.blocks[i], d_model=dim, adapter_channels=dim//2,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
-
-        for stage, dim in zip([clip_2d.visual.trunk.stages[0],clip_2d.visual.trunk.stages[1],clip_2d.visual.trunk.stages[2]],[64,128,256]):
+        for stage, dim in zip(clip_2d.visual.trunk.stages,dims):
             for i in range(len(stage.blocks)):
                 stage.blocks[i] = ResAdapterBlock(original_block=stage.blocks[i], d_model=dim, adapter_channels=dim//2,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
-        for i in range(len(clip_2d.visual.trunk.stages[3].blocks)-1):
-            clip_2d.visual.trunk.stages[3].blocks[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[3].blocks[i], d_model=512, adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
-        clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,n_positions=num_frames*8*8,num_frames=num_frames)
+
+        # for stage, dim in zip([clip_2d.visual.trunk.stages[0],clip_2d.visual.trunk.stages[1],clip_2d.visual.trunk.stages[2]],[64,128,256]):
+        #     for i in range(len(stage.blocks)):
+        #         stage.blocks[i] = ResAdapterBlock(original_block=stage.blocks[i], d_model=dim, adapter_channels=dim//2,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
+        # for i in range(len(clip_2d.visual.trunk.stages[3].blocks)-1):
+        #     clip_2d.visual.trunk.stages[3].blocks[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[3].blocks[i], d_model=512, adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
+        # clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,n_positions=num_frames*8*8,num_frames=num_frames)
 
         clip_2d.visual.trunk.final_conv = ResAdapterBlock(original_block=clip_2d.visual.trunk.final_conv,d_model=512,adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         clip_2d.visual.trunk.head = ResAdapterBlock(original_block=clip_2d.visual.trunk.head,d_model=1024,adapter_channels=512,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
