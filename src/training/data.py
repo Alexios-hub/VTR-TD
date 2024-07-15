@@ -591,11 +591,11 @@ def preprocess_sample(args,sample,preprocess_img,tokenizer):
     images_input = preprocess_img(frames)
     texts = sample['texts']
 
-    # text_idx = random.choice(range(0,len(texts)))
-    # text = tokenizer(texts[text_idx])[0]
+    text_idx = random.choice(range(0,len(texts)))
+    text = tokenizer(texts[text_idx])[0]
 
-    paragraph = ";".join(texts)
-    text = tokenizer(paragraph)[0]
+    # paragraph = ";".join(texts)
+    # text = tokenizer(paragraph)[0]
     # t_features = sample['pth']
     # t_features['t_texts_embeds'] = t_features['t_texts_embeds'][text_idx]
     # t_features['t_pooled_texts_embeds'] = t_features['t_pooled_texts_embeds'][text_idx]
