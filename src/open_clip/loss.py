@@ -356,10 +356,10 @@ class VideoDistillClipLoss(ClipLoss):
             image_features,#[B,512]
             text_features,
             logit_scale,
-            dist_features,
+            # dist_features,
             output_dict=False,
     ):
-        dist_features['t_visual_projs'] = dist_features['t_visual_projs'].mean(dim=1)
+        # dist_features['t_visual_projs'] = dist_features['t_visual_projs'].mean(dim=1)
         logits_per_image, logits_per_text = \
             self.get_logits(image_features, text_features, logit_scale)
 
@@ -370,12 +370,12 @@ class VideoDistillClipLoss(ClipLoss):
             F.cross_entropy(logits_per_text, labels)
         ) / 2
 
-        distill_loss = self.dist_loss(args=args, dist_features=dist_features,s_image_features=image_features,\
-                                      s_text_features=text_features,s_logits_per_image=logits_per_image,s_logits_per_text=logits_per_text)
+        # distill_loss = self.dist_loss(args=args, dist_features=dist_features,s_image_features=image_features,\
+        #                               s_text_features=text_features,s_logits_per_image=logits_per_image,s_logits_per_text=logits_per_text)
 
         if output_dict:
             output = {"contrastive_loss": contrastive_loss}
-            output.update(distill_loss)
+            # output.update(distill_loss)
             return output
 
         else:

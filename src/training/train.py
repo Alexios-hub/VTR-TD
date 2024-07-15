@@ -275,18 +275,18 @@ def train_video_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler
         if not args.skip_scheduler:
             scheduler(step)
 
-        images, texts, t_image_feats,t_pooled_image_feats,t_texts_embeds,t_pooled_texts_embeds,t_visual_projs,t_text_projs = batch
+        images, texts = batch
 
-        t_features = {
-            "t_image_feats":t_image_feats,
-            "t_pooled_image_feats":t_pooled_image_feats,
-            "t_texts_embeds":t_texts_embeds,
-            "t_pooled_texts_embeds":t_pooled_texts_embeds,
-            "t_visual_projs":t_visual_projs,
-            "t_text_projs":t_text_projs
-        }
-        for key in t_features.keys():
-            t_features[key] = t_features[key].to(device=device, dtype=input_dtype, non_blocking=True).detach()
+        # t_features = {
+        #     "t_image_feats":t_image_feats,
+        #     "t_pooled_image_feats":t_pooled_image_feats,
+        #     "t_texts_embeds":t_texts_embeds,
+        #     "t_pooled_texts_embeds":t_pooled_texts_embeds,
+        #     "t_visual_projs":t_visual_projs,
+        #     "t_text_projs":t_text_projs
+        # }
+        # for key in t_features.keys():
+        #     t_features[key] = t_features[key].to(device=device, dtype=input_dtype, non_blocking=True).detach()
         images = images.to(device=device, dtype=input_dtype, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
 
@@ -300,7 +300,8 @@ def train_video_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler
                 if args.distill:
                     # with torch.no_grad():
                     #     t_image_features = dist_model(pixel_values=t_images).last_hidden_state
-                    model_out['dist_features'] = t_features
+                    # model_out['dist_features'] = t_features
+                    pass
                 losses = loss(**model_out, args=args, output_dict=True)
 
                 total_loss = sum(losses.values())
@@ -577,7 +578,8 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
         all_image_features, all_text_features = [], []
         with torch.no_grad():
             for i, batch in enumerate(dataloader):
-                images, texts, _,_,_,_,_,_ = batch
+                # images, texts, _,_,_,_,_,_ = batch
+                images, texts = batch
                 images = images.to(device=device, dtype=input_dtype, non_blocking=True)#
                 texts = texts.to(device=device, non_blocking=True)
 
