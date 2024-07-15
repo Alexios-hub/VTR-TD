@@ -590,19 +590,23 @@ def preprocess_sample(args,sample,preprocess_img,tokenizer):
     del sample['pth']['frames']
     images_input = preprocess_img(frames)
     texts = sample['texts']
-    text_idx = random.choice(range(0,len(texts)))
-    text = tokenizer(texts[text_idx])[0]
-    t_features = sample['pth']
-    t_features['t_texts_embeds'] = t_features['t_texts_embeds'][text_idx]
-    t_features['t_pooled_texts_embeds'] = t_features['t_pooled_texts_embeds'][text_idx]
-    t_features['t_text_projs'] = t_features['t_text_projs'][text_idx]
+
+    # text_idx = random.choice(range(0,len(texts)))
+    # text = tokenizer(texts[text_idx])[0]
+
+    paragraph = ";".join(texts)
+    text = tokenizer(paragraph)[0]
+    # t_features = sample['pth']
+    # t_features['t_texts_embeds'] = t_features['t_texts_embeds'][text_idx]
+    # t_features['t_pooled_texts_embeds'] = t_features['t_pooled_texts_embeds'][text_idx]
+    # t_features['t_text_projs'] = t_features['t_text_projs'][text_idx]
     return_sample = {
         'video':images_input,
         'text':text
     }
-    for key in t_features.keys():
-        t_features[key] = t_features[key].squeeze()
-    return_sample.update(t_features)
+    # for key in t_features.keys():
+    #     t_features[key] = t_features[key].squeeze()
+    # return_sample.update(t_features)
     
     return return_sample
 
@@ -679,7 +683,8 @@ def get_wds_video_retrieval_dataset(args, preprocess_img, is_train, epoch=0, flo
                                                     tokenizer=tokenizer)
 
         ),
-        wds.to_tuple("video", "text", "t_image_feats","t_pooled_image_feats","t_texts_embeds","t_pooled_texts_embeds","t_visual_projs","t_text_projs"),
+        # wds.to_tuple("video", "text", "t_image_feats","t_pooled_image_feats","t_texts_embeds","t_pooled_texts_embeds","t_visual_projs","t_text_projs"),
+        wds.to_tuple("video", "text"),
         wds.batched(args.batch_size, partial=not is_train)
     ])
 

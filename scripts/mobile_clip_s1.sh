@@ -24,4 +24,5 @@ torchrun --nproc_per_node 2 -m \
     --distill-ckd-alpha 0.0 \
     --distill-temporal-alpha 0.0 \
     --distill-text-fd-alpha 0.0 \
+    --resume /home/user/data/VTR-TD/src/logs/2024_07_15-15_10_10-model_MobileCLIP-S1-lr_0.0005-b_64-j_2-p_amp/checkpoints/epoch_7.pt
 
