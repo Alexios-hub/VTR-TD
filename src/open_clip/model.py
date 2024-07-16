@@ -1007,8 +1007,6 @@ class VideoCLIP(nn.Module):
         clip_2d.visual.trunk.head = ResAdapterBlock(original_block=clip_2d.visual.trunk.head,d_model=1024,adapter_channels=512,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         clip_2d.visual.trunk.head = AdaptMLP(original_mlp=clip_2d.visual.trunk.head,in_dim=512,mid_dim=256,s=0.1)
         
-        
-                
         for block in clip_2d.text.transformer.resblocks:
             block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=0.1)
         
@@ -1026,15 +1024,17 @@ class VideoCLIP(nn.Module):
         B,T,C,H,W = video.shape#[B,4,3,224,224]
 
         video = video.reshape(B*T,C,H,W)
-        # with torch.no_grad():
-        out_dict = self.clip_2d(video, text)
-        # if isinstance(out_dict['image_features'],tuple):
-        #     out_dict.update({
-        #         'image_features':out_dict['image_features'][0],#[B*T,512]
-        #         'tokens':out_dict['image_features'][1]#[B*T,196,768]
-        #     })
-        out_dict['image_features'] = out_dict['image_features'].view(B,T,-1).mean(dim=1)
+        multi_text = False
+        if len(text.shape) == 3:
+            b, n, d = text.shape
+            text = text.reshape(b*n,d)
+            multi_text = True
 
+        out_dict = self.clip_2d(video, text)
+        if multi_text:
+            out_dict['text_features'] = out_dict['text_features'].reshape(b,n,-1)
+
+        out_dict['image_features'] = out_dict['image_features'].view(B,T,-1).mean(dim=1)
 
         output = {}
         output['image_features'] = F.normalize(out_dict['image_features'],dim=-1)
