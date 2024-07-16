@@ -12,6 +12,7 @@ from multiprocessing import Value
 import numpy as np
 import pandas as pd
 import torch
+import torchvision
 import torchvision.datasets as datasets
 import webdataset as wds
 from PIL import Image
@@ -586,16 +587,22 @@ def custom_decoder(key, data):
         return data
 def preprocess_sample(args,is_train, sample,preprocess_img,tokenizer):
     # frames, _, _ = read_frames_decord_stream(video_stream=sample['video'],num_frames=4,sample='middle',max_num_frames=-1,trimmed30=False)#frames=[4, 3, 240, 320]
-    frames = sample['pth']['frames']
-    del sample['pth']['frames']
+    frames = sample['pth']
+    if is_train:
+        aug = torchvision.transforms.RandAugment()
+        frames = aug(frames)
+    del sample['pth']
     images_input = preprocess_img(frames)
     texts = sample['texts']
 
     if not is_train:
-        text_idx = random.choice(range(0,len(texts)))
-        text = tokenizer(texts[text_idx])
+        # text_idx = random.choice(range(0,len(texts)))
+        # text = tokenizer(texts[text_idx])
+        assert len(texts) == 1
+        text = tokenizer(texts)
     else:
-        text = random.sample(texts,10)
+        # text = random.sample(texts,10)
+        text = random.choice(texts)
         # if len(texts) < 20:
         #     texts.extend([texts[-1]] * (20 - len(texts)))
         # text = texts
@@ -683,7 +690,7 @@ def get_wds_video_retrieval_dataset(args, preprocess_img, is_train, epoch=0, flo
     pipeline.extend([
         # wds.decode("pilrgb", handler=log_and_continue),
         wds.decode(custom_decoder),
-        wds.rename(video="mp4;avi", texts="json"),
+        wds.rename(texts="captions.json",pth="frames.pth"),
         wds.map(
             lambda sample: preprocess_sample(args=args, is_train=is_train, sample=sample, \
                                              preprocess_img=preprocess_img, \
