@@ -20,7 +20,7 @@ torchrun --nproc_per_node 2 -m \
     --pretrained datacompdr \
     --distill-model umt \
     --distill-pretrained l16_25m \
-    --num-frames 4 \
+    --num-frames 12 \
     --distill-ckd-alpha 0.0 \
     --distill-temporal-alpha 0.0 \
     --distill-text-fd-alpha 0.0 \
