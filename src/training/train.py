@@ -585,8 +585,8 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
 
                 with autocast():
                     model_out = model(images, texts)
-                    image_features = model_out["image_features"]#[B,T,768]
-                    text_features = model_out["text_features"]# [B,768]
+                    image_features = model_out["image_features"]#[B,768]
+                    text_features = model_out["text_features"].mean(1)# [B,768]
                     logit_scale = model_out["logit_scale"]
                     # features are accumulated in CPU tensors, otherwise GPU memory exhausted quickly
                     # however, system RAM is easily exceeded and compute time becomes problematic
@@ -662,25 +662,6 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
         wandb.log(log_data, step=step)
 
     return metrics
-
-# def get_clip_metrics(image_features, text_features, logit_scale):
-#     metrics = {}
-#     logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
-#     logits_per_text = logits_per_image.t().detach().cpu()
-
-#     logits = {"image_to_text": logits_per_image, "text_to_image": logits_per_text}
-#     ground_truth = torch.arange(len(text_features)).view(-1, 1)
-
-#     for name, logit in logits.items():
-#         ranking = torch.argsort(logit, descending=True)
-#         preds = torch.where(ranking == ground_truth)[1]
-#         preds = preds.detach().cpu().numpy()
-#         metrics[f"{name}_mean_rank"] = preds.mean() + 1
-#         metrics[f"{name}_median_rank"] = np.floor(np.median(preds)) + 1
-#         for k in [1, 5, 10]:
-#             metrics[f"{name}_R@{k}"] = np.mean(preds < k)
-
-#     return metrics
 
 def get_clip_metrics(image_features, text_features, logit_scale):
     metrics = {}

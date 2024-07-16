@@ -329,23 +329,24 @@ class VideoDistillClipLoss(ClipLoss):
             all_image_features = F.normalize(all_image_features,dim=-1)
             all_text_features = F.normalize(all_text_features,dim=-1)
             if self.local_loss:
-                logits_per_image = logit_scale * image_features @ all_text_features.T
-                logits_per_text = logit_scale * text_features @ all_image_features.T
-                # logits_per_image = logit_scale * torch.einsum("mld,nd->mln", image_features, all_text_features).mean(1)
-                # logits_per_text = logit_scale * torch.einsum("nd,mld->nml", text_features, all_image_features).mean(2)
+                # logits_per_image = logit_scale * image_features @ all_text_features.T
+                # logits_per_text = logit_scale * text_features @ all_image_features.T
+                logits_per_image = logit_scale * torch.einsum('md,nld->mln',image_features,all_text_features)
+                logits_per_text = logit_scale * torch.einsum('nld,md->nlm',text_features,all_image_features)
             else:
-                logits_per_image = logit_scale * all_image_features @ all_text_features.T
-                logits_per_text = logits_per_image.T
-                # logits_per_image = logit_scale * torch.einsum("mld,nd->mln", all_image_features, all_text_features).mean(1)
+                # logits_per_image = logit_scale * all_image_features @ all_text_features.T
+                # logits_per_text = logits_per_image.T
+                logits_per_image = logit_scale * torch.einsum('md,nld->mln',all_image_features,all_text_features)
+                logits_per_text = logit_scale * torch.einsum('nld,md->nlm',all_text_features,all_image_features)
                 # logits_per_text = logits_per_image.T
         else:
             image_features = F.normalize(image_features,dim=-1)
             text_features = F.normalize(text_features,dim=-1)
-            logits_per_image = logit_scale * image_features @ text_features.T
-            logits_per_text = logit_scale * text_features @ image_features.T
+            # logits_per_image = logit_scale * image_features @ text_features.T
+            # logits_per_text = logit_scale * text_features @ image_features.T
+            logits_per_image = logit_scale * torch.einsum('md,nld->mln',image_features,text_features)
+            logits_per_text = logit_scale * torch.einsum('nld,md->nlm',text_features,image_features)
 
-            # logits_per_image = logit_scale * torch.einsum("mld,nd->mln", image_features, text_features).mean(1)
-            # logits_per_text = logit_scale * torch.einsum("nd,mld->nml", text_features, image_features).mean(2)
         
         return logits_per_image, logits_per_text
         
@@ -365,10 +366,15 @@ class VideoDistillClipLoss(ClipLoss):
 
         labels = self.get_ground_truth(image_features.device, logits_per_image.shape[0])
 
-        contrastive_loss = (
-            F.cross_entropy(logits_per_image, labels) +
-            F.cross_entropy(logits_per_text, labels)
-        ) / 2
+        # contrastive_loss = (
+        #     F.cross_entropy(logits_per_image, labels) +
+        #     F.cross_entropy(logits_per_text, labels)
+        # ) / 2
+
+        contrastive_loss = sum([(
+            F.cross_entropy(logits_per_image[:,i,:].squeeze(), labels) +
+            F.cross_entropy(logits_per_text[:,i,:].squeeze(), labels)
+        ) / 2 for i in range(logits_per_image.shape[1])])/logits_per_image.shape[1]
 
         # distill_loss = self.dist_loss(args=args, dist_features=dist_features,s_image_features=image_features,\
         #                               s_text_features=text_features,s_logits_per_image=logits_per_image,s_logits_per_text=logits_per_text)

@@ -584,15 +584,22 @@ def custom_decoder(key, data):
         return json.loads(data.decode('utf-8'))
     else:
         return data
-def preprocess_sample(args,sample,preprocess_img,tokenizer):
+def preprocess_sample(args,is_train, sample,preprocess_img,tokenizer):
     # frames, _, _ = read_frames_decord_stream(video_stream=sample['video'],num_frames=4,sample='middle',max_num_frames=-1,trimmed30=False)#frames=[4, 3, 240, 320]
     frames = sample['pth']['frames']
     del sample['pth']['frames']
     images_input = preprocess_img(frames)
     texts = sample['texts']
 
-    text_idx = random.choice(range(0,len(texts)))
-    text = tokenizer(texts[text_idx])[0]
+    if not is_train:
+        text_idx = random.choice(range(0,len(texts)))
+        text = tokenizer(texts[text_idx])
+    else:
+        text = random.sample(texts,10)
+        # if len(texts) < 20:
+        #     texts.extend([texts[-1]] * (20 - len(texts)))
+        # text = texts
+        text = tokenizer(text)
 
     # paragraph = ";".join(texts)
     # text = tokenizer(paragraph)[0]
@@ -678,7 +685,7 @@ def get_wds_video_retrieval_dataset(args, preprocess_img, is_train, epoch=0, flo
         wds.decode(custom_decoder),
         wds.rename(video="mp4;avi", texts="json"),
         wds.map(
-            lambda sample: preprocess_sample(args=args, sample=sample, \
+            lambda sample: preprocess_sample(args=args, is_train=is_train, sample=sample, \
                                              preprocess_img=preprocess_img, \
                                                     tokenizer=tokenizer)
 
