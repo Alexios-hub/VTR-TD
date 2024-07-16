@@ -585,7 +585,7 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
 
                 with autocast():
                     model_out = model(images, texts)
-                    image_features = model_out["image_features"]#[B,T,768]
+                    image_features = model_out["image_features"]#[B,768]
                     text_features = model_out["text_features"]# [B,768]
                     logit_scale = model_out["logit_scale"]
                     # features are accumulated in CPU tensors, otherwise GPU memory exhausted quickly
