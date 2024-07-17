@@ -676,7 +676,6 @@ class ShapedAttention3D(nn.Module):
 
         N = self.num_frames * H * W
         x = x.reshape(B, self.num_frames, C,H,W).transpose(1,2)#[B,C,T,H,W]
-
         x = x.flatten(2).transpose(-2, -1)  # (B, N, C)
         qk = (
             self.qk(x)
@@ -781,7 +780,7 @@ class ParallelAttentionBlock3D(nn.Module):
             drop_path: float = 0.0,
             num_frames: int = 4,
             use_pos_emb = False,
-            n_positions = 300000
+            width = 8
     ):
         """Build Attention Block.
 
@@ -798,7 +797,7 @@ class ParallelAttentionBlock3D(nn.Module):
         super().__init__()
 
         self.norm = norm_layer(dim)
-        self.token_mixer = ShapedAttention3D(dim=dim,num_frames=num_frames)
+        self.token_mixer = ShapedAttention3D(dim=dim,num_frames=num_frames,width=width)
 
         self.layer_scale_1 = nn.Identity()
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
@@ -814,6 +813,7 @@ class ParallelAttentionBlock3D(nn.Module):
         self.layer_scale_2 = nn.Identity()
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         if use_pos_emb:
+            n_positions = width*width*num_frames
             self.pos_emb = get_sinusoid_encoding_table(n_position=n_positions, d_hid=dim)
         self.use_pos_emb = use_pos_emb
         self.num_frames = num_frames
@@ -860,7 +860,7 @@ class AdaptAttention(nn.Module):
         return output
 
 class AdaptParallelAttention(nn.Module):
-    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1, use_pos_emb=False, n_positions = 300000, num_frames=4):
+    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1, use_pos_emb=False, width=8, num_frames=4):
         super().__init__()
         self.original_mlp = original_mlp
         self.in_dim = in_dim
@@ -870,7 +870,7 @@ class AdaptParallelAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.scale = s
         self.use_pos_emb = use_pos_emb
-        self.encoder = ParallelAttentionBlock3D(dim=mid_dim,num_frames=num_frames,use_pos_emb=use_pos_emb,n_positions=n_positions)
+        self.encoder = ParallelAttentionBlock3D(dim=mid_dim,num_frames=num_frames,use_pos_emb=use_pos_emb,width=width)
         self.num_frames = num_frames
 
         #initialization
@@ -973,7 +973,20 @@ class ResAdapterBlock(nn.Module):
         x = self.adapter(x)
         x = self.original_block(x)
         return x
-        
+
+class PostResAdapterBlock(nn.Module):
+    def __init__(self, original_block, d_model, adapter_channels, kernel_size, num_frames=4, scale=1.0):
+        super().__init__()
+        self.original_block = original_block
+        for _, p in self.original_block.named_parameters():
+            p.requires_grad = False
+        self.adapter = AdapterConv(in_channels=d_model,adapter_channels=adapter_channels,kernel_size=kernel_size,num_frames=num_frames,scale=scale)
+
+    def forward(self,x):
+        x = self.original_block(x)
+        x = self.adapter(x)
+        return x
+     
 class VideoCLIP(nn.Module):
     def __init__(
             self,
@@ -988,24 +1001,9 @@ class VideoCLIP(nn.Module):
         for param in clip_2d.parameters():
             param.requires_grad = False
 
-        # clip_2d.logit_scale.requires_grad = False
+        clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,width=8,num_frames=num_frames)
+        clip_2d.visual.trunk.final_conv = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=512,width=8,num_frames=num_frames)
 
-        # dims = [64,128,256,512]
-        
-        # for stage, dim in zip(clip_2d.visual.trunk.stages,dims):
-        #     for i in range(len(stage.blocks)):
-        #         stage.blocks[i] = ResAdapterBlock(original_block=stage.blocks[i], d_model=dim, adapter_channels=dim//2,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
-
-        # for stage, dim in zip([clip_2d.visual.trunk.stages[0],clip_2d.visual.trunk.stages[1],clip_2d.visual.trunk.stages[2]],[64,128,256]):
-        #     for i in range(len(stage.blocks)):
-        #         stage.blocks[i] = ResAdapterBlock(original_block=stage.blocks[i], d_model=dim, adapter_channels=dim//2,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
-        # for i in range(len(clip_2d.visual.trunk.stages[3].blocks)-1):
-        #     clip_2d.visual.trunk.stages[3].blocks[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[3].blocks[i], d_model=512, adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames, scale=1.0)
-        clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,n_positions=num_frames*8*8,num_frames=num_frames)
-        clip_2d.visual.trunk.final_conv = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=512,num_frames=num_frames)
-
-        # clip_2d.visual.trunk.final_conv = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=512,use_pos_emb=True,n_positions=num_frames*8*8,num_frames=num_frames)
-        # clip_2d.visual.trunk.final_conv = ResAdapterBlock(original_block=clip_2d.visual.trunk.final_conv,d_model=512,adapter_channels=256,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         clip_2d.visual.trunk.head = ResAdapterBlock(original_block=clip_2d.visual.trunk.head,d_model=1024,adapter_channels=512,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         clip_2d.visual.trunk.head = AdaptMLP(original_mlp=clip_2d.visual.trunk.head,in_dim=512,mid_dim=256,s=0.1)
         

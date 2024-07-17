@@ -588,6 +588,16 @@ def custom_decoder(key, data):
 def preprocess_sample(args,is_train, sample,preprocess_img,tokenizer):
     # frames, _, _ = read_frames_decord_stream(video_stream=sample['video'],num_frames=4,sample='middle',max_num_frames=-1,trimmed30=False)#frames=[4, 3, 240, 320]
     frames = sample['pth']
+    if frames.shape[0]<12:
+        # 需要填充的帧数
+        num_frames_to_add = 12 - frames.shape[0]
+        # 获取最后一帧
+        last_frame = frames[-1].unsqueeze(0)  # 增加一个维度，使其成为[1, C, H, W]
+        # 复制最后一帧到需要的数量
+        padding_frames = last_frame.repeat(num_frames_to_add, 1, 1, 1)
+        # 将原始帧和填充帧拼接
+        frames = torch.cat([frames, padding_frames], dim=0)
+        
     if is_train:
         aug = torchvision.transforms.RandAugment()
         frames = aug(frames)
