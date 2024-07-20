@@ -42,6 +42,9 @@ from training.file_utils import pt_load, check_exists, start_sync_process, remot
 from torchvision import transforms
 LATEST_CHECKPOINT_NAME = "epoch_latest.pt"
 
+from open_clip.model import convert_weights_to_lp
+from open_clip.factory import get_model_config
+
 
 def random_seed(seed=42, rank=0):
     torch.manual_seed(seed + rank)
@@ -302,13 +305,43 @@ def main(args):
     # ])
 
 
-    # params_visual = count_parameters(model_org.visual)
-    # params_text = count_parameters(model_org.text)
+    org_params_visual = count_parameters(model_org.visual)
+    org_params_text = count_parameters(model_org.text)
     model = VideoCLIP(
         clip_2d=model_org,
         num_frames=args.num_frames
-    ).to(device)
+    )
+
+    model_cfg = get_model_config(args.model)
+    is_timm_model = 'timm_model_name' in model_cfg.get('vision_cfg', {})
+    if args.precision in ("fp16", "bf16"):
+        dtype = torch.float16 if 'fp16' in args.precision else torch.bfloat16
+        # manual mixed precision that matches original OpenAI behaviour
+        if is_timm_model:
+            # FIXME this is a bit janky, create timm based model in low-precision and
+            # then cast only LayerNormFp32 instances back to float32 so they don't break.
+            # Why? The convert_weights_to_lp fn only works with native models.
+            model.to(device=device, dtype=dtype)
+            from open_clip.transformer import LayerNormFp32
+
+            def _convert_ln(m):
+                if isinstance(m, LayerNormFp32):
+                    m.weight.data = m.weight.data.to(torch.float32)
+                    m.bias.data = m.bias.data.to(torch.float32)
+            model.apply(_convert_ln)
+        else:
+            model.to(device=device)
+            convert_weights_to_lp(model, dtype=dtype)
+    elif args.precision in ("pure_fp16", "pure_bf16"):
+        dtype = torch.float16 if 'fp16' in args.precision else torch.bfloat16
+        model.to(device=device, dtype=dtype)
+    else:
+        model.to(device=device)
+
     del model_org
+
+    params_visual = count_parameters(model.clip_2d.visual)
+    params_text = count_parameters(model.clip_2d.text)
 
     if args.distill:
         # FIXME: currently assumes the model you're distilling from has the same tokenizer & transforms.
@@ -355,8 +388,10 @@ def main(args):
     if is_master(args):
         logging.info("Model:")
         logging.info(f"{str(model)}")
-        # logging.info(f"Visual Parameters:{params_visual}M")
-        # logging.info(f"Text Parameters:{params_text}M")
+        logging.info(f"Original Visual Parameters:{org_params_visual}M")
+        logging.info(f"Original Text Parameters:{org_params_text}M")
+        logging.info(f"Visual Parameters:{params_visual}M")
+        logging.info(f"Text Parameters:{params_text}M")
         logging.info("Params:")
         params_file = os.path.join(args.logs, args.name, "params.txt")
         with open(params_file, "w") as f:

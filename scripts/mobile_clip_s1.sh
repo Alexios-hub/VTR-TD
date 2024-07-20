@@ -11,8 +11,8 @@ torchrun --nproc_per_node 2 -m \
     --val-data="/home/user/data/MSRVTT-videos/test/{000000..000009}.tar"  \
     --val-num-samples 1000 \
     --warmup 0 \
-    --batch-size=64 \
-    --lr=5e-4 \
+    --batch-size=14 \
+    --lr=5e-6 \
     --wd=0.2 \
     --epochs 32 \
     --workers=4 \
@@ -24,5 +24,4 @@ torchrun --nproc_per_node 2 -m \
     --distill-ckd-alpha 0.0 \
     --distill-temporal-alpha 0.0 \
     --distill-text-fd-alpha 0.0 \
-    --seed 123
-
+    --precision bf16 \
