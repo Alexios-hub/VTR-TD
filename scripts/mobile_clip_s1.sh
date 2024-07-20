@@ -6,9 +6,9 @@ torchrun --nproc_per_node 2 -m \
     --zeroshot-frequency 1 \
     --report-to tensorboard \
     --dataset-type webdataset \
-    --train-data="/workspace/data/MSRVTT-videos/train_12/{000000..000089}.tar"  \
+    --train-data="/workspace/data/MSRVTT-videos/train/{000000..000089}.tar"  \
     --train-num-samples 9000 \
-    --val-data="/workspace/data/MSRVTT-videos/test_12/{000000..000009}.tar"  \
+    --val-data="/workspace/data/MSRVTT-videos/test/{000000..000009}.tar"  \
     --val-num-samples 1000 \
     --warmup 0 \
     --batch-size=16 \

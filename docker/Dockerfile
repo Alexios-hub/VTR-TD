@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.3.0-cuda11.8-cudnn8-devel
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
 
 # install openssh and openssl 
 RUN set -ex \
@@ -61,11 +61,17 @@ RUN apt-get update && apt-get install -y --fix-missing \
     iputils-ping \
     zlib1g-dev \
     unzip \
-    tmux \
-    pkg-config \
-    libgl-dev \
-    libblas-dev \
-    liblapack-dev \
+    libpopt0 \
+    tmux &&\
+    apt-get install -y --fix-missing \
+    pkg-config &&\
+    apt-get install -y --fix-missing \
+    libgl-dev &&\
+    apt-get install -y --fix-missing \
+    libblas-dev &&\
+    apt-get install -y --fix-missing \
+    liblapack-dev &&\
+    apt-get install -y --fix-missing \
     libxaw7 && \
     apt-get install -y --fix-missing \
     graphviz \
@@ -85,31 +91,31 @@ RUN conda config --append channels conda-forge
       
 # Install essential Python packages
 RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    blackcellmagic \
-    pytest \
-    pytest-cov \
-    numpy \
-    matplotlib \
-    scipy \
-    pandas \
-    jupyter \
-    scikit-learn \
-    scikit-image \
-    seaborn \
-    graphviz \
-    gpustat \
-    h5py \
-    gitpython \
-    ptvsd \
-    Pillow \
-    opencv-python \
-    prefetch_generator \
-    optuna \
-    einops \
-    PyYAML \
-    tqdm \
-    tensorboard \
-    jupyterlab \
+    # blackcellmagic \
+    # pytest \
+    # pytest-cov \
+    # numpy \
+    # matplotlib \
+    # scipy \
+    # pandas \
+    # jupyter \
+    # scikit-learn \
+    # scikit-image \
+    # seaborn \
+    # graphviz \
+    # gpustat \
+    # h5py \
+    # gitpython \
+    # ptvsd \
+    # Pillow \
+    # opencv-python \
+    # prefetch_generator \
+    # optuna \
+    # einops \
+    # PyYAML \
+    # tqdm \
+    # tensorboard \
+    # jupyterlab \
     absl-py==2.1.0 \
     anyio==4.4.0 \
     argon2-cffi==23.1.0 \
