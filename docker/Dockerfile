@@ -21,7 +21,36 @@ RUN set -ex \
 	&& chmod 600 /root/.ssh/authorized_keys
 
 # Install essential Ubuntu packages
-RUN apt-get update && apt-get install -y \
+# RUN apt-get update && apt-get install --fix-missing -y \
+#     rsync \
+#     build-essential \
+#     git \
+#     wget \
+#     vim \
+#     curl \
+#     zip \
+#     iputils-ping \
+#     zlib1g-dev \
+#     unzip \
+#     tmux \
+#     pkg-config \
+#     libgl-dev \
+#     libblas-dev \
+#     liblapack-dev \
+#     libxaw7 \
+#     graphviz \
+#     libhdf5-dev \
+#     swig \
+#     apt-transport-https \
+#     lsb-release \
+#     libpng-dev \
+#     ca-certificates &&\
+#     apt-get clean &&\
+#     # best practice to keep the Docker image lean
+#     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Update package list and install dependencies
+RUN apt-get update && apt-get install -y --fix-missing \
     rsync \
     build-essential \
     git \
@@ -37,17 +66,19 @@ RUN apt-get update && apt-get install -y \
     libgl-dev \
     libblas-dev \
     liblapack-dev \
+    libxaw7 && \
+    apt-get install -y --fix-missing \
     graphviz \
     libhdf5-dev \
     swig \
     apt-transport-https \
     lsb-release \
     libpng-dev \
-    ca-certificates &&\
-    apt-get clean &&\
-    # best practice to keep the Docker image lean
+    ca-certificates && \
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
+    
 # init conda
 RUN /opt/conda/condabin/conda init
 RUN conda config --append channels conda-forge
@@ -234,6 +265,13 @@ RUN set -ex \
 # Export port for Jupyter Notebook
 EXPOSE 8888
 
-# By default start running jupyter notebook
-ENTRYPOINT ["jupyter", "lab", "--allow-root"]
+# # By default start running jupyter notebook
+# ENTRYPOINT ["jupyter", "lab", "--allow-root"]
 
+
+# 将 entrypoint.sh 脚本复制到容器的 /usr/local/bin 目录下
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+# 赋予脚本执行权限
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

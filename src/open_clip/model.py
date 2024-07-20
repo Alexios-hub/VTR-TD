@@ -714,7 +714,7 @@ class AttentionBlock3D(nn.Module):
             drop_path: float = 0.0,
             num_frames: int = 4,
             use_pos_emb = False,
-            n_positions = 300000
+            width=8
     ):
         """Build Attention Block.
 
@@ -747,15 +747,16 @@ class AttentionBlock3D(nn.Module):
         self.layer_scale_2 = nn.Identity()
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         if use_pos_emb:
+            n_positions = width * width * num_frames
             self.pos_emb = get_sinusoid_encoding_table(n_position=n_positions, d_hid=dim)
         self.use_pos_emb = use_pos_emb
         self.num_frames = num_frames
 
     def forward(self, x):
+        B_T, C, H, W = x.shape
+        B = B_T // self.num_frames
+        N = self.num_frames * H * W
         if self.use_pos_emb:
-             B_T, C, H, W = x.shape
-             B = B_T // self.num_frames
-             N = self.num_frames * H * W
              x = x.reshape(B,self.num_frames,C,H,W).transpose(1,2).flatten(2).transpose(1,2)#[B,N,C]
              x = x + self.pos_emb[:,:N].type_as(x).to(x.device).clone().detach()
              x = x.reshape(B*self.num_frames, H, W, C).permute(0,3,1,2)#[B_T,C,H,W]
@@ -833,7 +834,7 @@ class ParallelAttentionBlock3D(nn.Module):
         return out
     
 class AdaptAttention(nn.Module):
-    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1, use_pos_emb=False, n_positions = 300000, num_frames=4):
+    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1, use_pos_emb=False, width=8, num_frames=4):
         super().__init__()
         self.original_mlp = original_mlp
         self.in_dim = in_dim
@@ -843,7 +844,7 @@ class AdaptAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.scale = s
         self.use_pos_emb = use_pos_emb
-        self.encoder = AttentionBlock3D(dim=mid_dim,num_frames=num_frames,use_pos_emb=use_pos_emb,n_positions=n_positions)
+        self.encoder = AttentionBlock3D(dim=mid_dim,num_frames=num_frames,use_pos_emb=use_pos_emb,width=width)
         self.num_frames = num_frames
 
         #initialization

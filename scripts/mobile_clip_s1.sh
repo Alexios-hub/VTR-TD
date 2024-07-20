@@ -1,20 +1,20 @@
 cd src
 torchrun --nproc_per_node 2 -m \
-    --master_addr=127.0.0.2 --master_port=29586 \
+    --master_addr=127.0.0.2 --master_port=29568 \
     training.main_video \
     --save-frequency 1 \
     --zeroshot-frequency 1 \
     --report-to tensorboard \
     --dataset-type webdataset \
-    --train-data="/home/user/data/MSRVTT-videos/train/{000000..000089}.tar"  \
+    --train-data="/workspace/data/MSRVTT-videos/train_12/{000000..000089}.tar"  \
     --train-num-samples 9000 \
-    --val-data="/home/user/data/MSRVTT-videos/test/{000000..000009}.tar"  \
+    --val-data="/workspace/data/MSRVTT-videos/test_12/{000000..000009}.tar"  \
     --val-num-samples 1000 \
     --warmup 0 \
-    --batch-size=14 \
-    --lr=5e-6 \
+    --batch-size=16 \
+    --lr=5e-4 \
     --wd=0.2 \
-    --epochs 32 \
+    --epochs 64 \
     --workers=4 \
     --model MobileCLIP-S1 \
     --pretrained datacompdr \
@@ -24,4 +24,5 @@ torchrun --nproc_per_node 2 -m \
     --distill-ckd-alpha 0.0 \
     --distill-temporal-alpha 0.0 \
     --distill-text-fd-alpha 0.0 \
-    --precision bf16 \
+    --seed 123
+
