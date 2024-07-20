@@ -24,4 +24,5 @@ torchrun --nproc_per_node 2 -m \
     --distill-ckd-alpha 0.0 \
     --distill-temporal-alpha 0.0 \
     --distill-text-fd-alpha 0.0 \
+    --seed 123
 

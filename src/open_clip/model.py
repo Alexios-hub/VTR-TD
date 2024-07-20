@@ -1001,15 +1001,20 @@ class VideoCLIP(nn.Module):
 
         for param in clip_2d.parameters():
             param.requires_grad = False
+        # clip_2d.logit_scale.requires_grad = False
 
-        # clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,width=8,num_frames=num_frames)
-        # clip_2d.visual.trunk.final_conv = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=512,width=8,num_frames=num_frames)
+        dims = [64,128,256,512]
+        for i, dim in zip(range(len(clip_2d.visual.trunk.stages)),dims):
+            for j in range(len(clip_2d.visual.trunk.stages[i].blocks)):
+                clip_2d.visual.trunk.stages[i].blocks[j] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[i].blocks[j],d_model=dim,adapter_channels=dim//2,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
 
-        # clip_2d.visual.trunk.head = ResAdapterBlock(original_block=clip_2d.visual.trunk.head,d_model=1024,adapter_channels=512,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
-        # clip_2d.visual.trunk.head = AdaptMLP(original_mlp=clip_2d.visual.trunk.head,in_dim=512,mid_dim=256,s=0.1)
-        
-        #Compare with CLIP4CLIP-SeqTrans
-        clip_2d.visual.trunk.final_conv = AdaptAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=512,use_pos_emb=True,width=8,num_frames=num_frames)
+        # clip_2d.visual.trunk.stages[0] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[0],d_model=64,adapter_channels=32,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
+        # clip_2d.visual.trunk.stages[1] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[1],d_model=64,adapter_channels=32,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
+        # clip_2d.visual.trunk.stages[2] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[2],in_dim=256,mid_dim=128,use_pos_emb=True,width=16,num_frames=num_frames)
+        clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,width=8,num_frames=num_frames)
+        # clip_2d.visual.trunk.stages[3] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[3],d_model=256,adapter_channels=128,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
+        clip_2d.visual.trunk.final_conv = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=512,width=8,num_frames=num_frames)
+        clip_2d.visual.trunk.head = AdaptMLP(original_mlp=clip_2d.visual.trunk.head,in_dim=512,mid_dim=256,s=0.1)
         
         for block in clip_2d.text.transformer.resblocks:
             block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=0.1)
