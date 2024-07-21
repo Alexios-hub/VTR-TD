@@ -479,80 +479,6 @@ class AdaptMLP(nn.Module):
         output = original_mlp_x + up * self.scale
         return output
 
-from timm.models.layers import trunc_normal_
-
-class ConvNormAct(nn.Module):
-    """ Custom ConvNormAct for 3D convolutions. """
-    def __init__(self, in_chs, out_chs, kernel_size, groups, apply_act=True):
-        super().__init__()
-        self.conv = nn.Conv3d(in_chs, out_chs, kernel_size, padding=kernel_size // 2, groups=groups)
-        self.bn = nn.BatchNorm3d(out_chs)
-        self.act = nn.GELU() if apply_act else nn.Identity()
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        x = self.act(x)
-        return x
-
-class ConvMlp3D(nn.Module):
-    """3D Convolutional FFN Module."""
-
-    def __init__(
-            self,
-            in_chs: int,
-            hidden_channels: Optional[int] = None,
-            out_chs: Optional[int] = None,
-            act_layer: nn.Module = nn.GELU,
-            drop: float = 0.0,
-            num_frames: int=4
-    ) -> None:
-        """Build 3D convolutional FFN module.
-
-        Args:
-            in_chs: Number of input channels.
-            hidden_channels: Number of channels after expansion. Default: None
-            out_chs: Number of output channels. Default: None
-            act_layer: Activation layer. Default: `GELU`
-            drop: Dropout rate. Default: `0.0`.
-        """
-        super().__init__()
-        out_chs = out_chs or in_chs
-        hidden_channels = hidden_channels or in_chs
-        self.conv = ConvNormAct(
-            in_chs,
-            out_chs,
-            kernel_size=7,
-            groups=in_chs,
-            apply_act=False,
-        )
-        self.fc1 = nn.Conv3d(in_chs, hidden_channels, kernel_size=1)
-        self.act = act_layer()
-        self.fc2 = nn.Conv3d(hidden_channels, out_chs, kernel_size=1)
-        self.drop = nn.Dropout(drop)
-        self.apply(self._init_weights)
-        nn.init.zeros_(self.fc2.weight)
-        nn.init.zeros_(self.fc2.bias)
-        self.num_frames = num_frames
-
-    def _init_weights(self, m: nn.Module) -> None:
-        if isinstance(m, nn.Conv3d):
-            trunc_normal_(m.weight, std=0.02)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B_T,C,H,W = x.shape
-        B = B_T // self.num_frames
-        x = x.reshape(B, self.num_frames, C, H, W).transpose(1,2)
-        x = self.conv(x)
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
-        x = x.transpose(1,2).reshape(B*self.num_frames,C,H,W)
-        return x
 
 class Attention3D(nn.Module):
     """Multi-headed Self Attention module.
@@ -695,6 +621,81 @@ class ShapedAttention3D(nn.Module):
 
         x = x.transpose(-2, -1).reshape(B, C, self.num_frames, H, W).transpose(1,2).reshape(B*self.num_frames,C,H,W)
 
+        return x
+
+from timm.models.layers import trunc_normal_
+
+class ConvNormAct(nn.Module):
+    """ Custom ConvNormAct for 3D convolutions. """
+    def __init__(self, in_chs, out_chs, kernel_size, groups, apply_act=True):
+        super().__init__()
+        self.conv = nn.Conv3d(in_chs, out_chs, kernel_size, padding=kernel_size // 2, groups=groups)
+        self.bn = nn.BatchNorm3d(out_chs)
+        self.act = nn.GELU() if apply_act else nn.Identity()
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
+        x = self.act(x)
+        return x
+    
+class ConvMlp3D(nn.Module):
+    """3D Convolutional FFN Module."""
+
+    def __init__(
+            self,
+            in_chs: int,
+            hidden_channels: Optional[int] = None,
+            out_chs: Optional[int] = None,
+            act_layer: nn.Module = nn.GELU,
+            drop: float = 0.0,
+            num_frames: int=4
+    ) -> None:
+        """Build 3D convolutional FFN module.
+
+        Args:
+            in_chs: Number of input channels.
+            hidden_channels: Number of channels after expansion. Default: None
+            out_chs: Number of output channels. Default: None
+            act_layer: Activation layer. Default: `GELU`
+            drop: Dropout rate. Default: `0.0`.
+        """
+        super().__init__()
+        out_chs = out_chs or in_chs
+        hidden_channels = hidden_channels or in_chs
+        self.conv = ConvNormAct(
+            in_chs,
+            out_chs,
+            kernel_size=7,
+            groups=in_chs,
+            apply_act=False,
+        )
+        self.fc1 = nn.Conv3d(in_chs, hidden_channels, kernel_size=1)
+        self.act = act_layer()
+        self.fc2 = nn.Conv3d(hidden_channels, out_chs, kernel_size=1)
+        self.drop = nn.Dropout(drop)
+        self.apply(self._init_weights)
+        nn.init.zeros_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+        self.num_frames = num_frames
+
+    def _init_weights(self, m: nn.Module) -> None:
+        if isinstance(m, nn.Conv3d):
+            trunc_normal_(m.weight, std=0.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B_T,C,H,W = x.shape
+        B = B_T // self.num_frames
+        x = x.reshape(B, self.num_frames, C, H, W).transpose(1,2)
+        x = self.conv(x)
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        x = x.transpose(1,2).reshape(B*self.num_frames,C,H,W)
         return x
     
 class AttentionBlock3D(nn.Module):
@@ -962,13 +963,58 @@ class AdapterConv(nn.Module):
         x_id = x_id + self.scale * x
         return x_id
 
+class RepMixerBlock3D(nn.Module):
+    def __init__(self, in_channels, adapter_channels, hidden_rate, kernel_size=(3,1,1), num_frames=4, scale=0.1):
+        super().__init__()
+        self.num_frames=num_frames
+        self.scale = scale
+
+        #temporal mixer
+        self.norm1 = nn.BatchNorm3d(num_features=in_channels)
+        self.conv1 = nn.Conv3d(in_channels=in_channels,out_channels=adapter_channels,kernel_size=kernel_size,padding=tuple(x // 2 for x in kernel_size), bias=False,groups=adapter_channels)
+        self.norm2 = nn.BatchNorm3d(num_features=adapter_channels)
+
+        #mlp
+        self.conv2 = nn.Conv3d(in_channels=adapter_channels,out_channels=adapter_channels,kernel_size=(7,7,7),padding=(3,3,3),groups=adapter_channels)
+        self.norm3 = nn.BatchNorm3d(num_features=adapter_channels)
+        self.fc1 = nn.Conv3d(in_channels=adapter_channels,out_channels=adapter_channels*hidden_rate,kernel_size=(1,1,1),bias=False)
+        self.act = nn.GELU()
+        self.fc2 = nn.Conv3d(in_channels=adapter_channels*hidden_rate,out_channels=adapter_channels,kernel_size=(1,1,1),bias=False)
+        self.proj = nn.Conv3d(in_channels=adapter_channels,out_channels=in_channels,kernel_size=(1,1,1),bias=False)
+        nn.init.constant_(self.norm1.weight,0)
+        nn.init.constant_(self.norm1.bias,0)
+        nn.init.constant_(self.conv1.weight,0)
+        nn.init.constant_(self.norm2.weight,0)
+        nn.init.constant_(self.norm2.bias,0)
+        nn.init.constant_(self.conv2.weight,0)
+        nn.init.constant_(self.conv2.bias,0)
+        nn.init.constant_(self.norm3.weight,0)
+        nn.init.constant_(self.norm3.bias,0)
+        nn.init.constant_(self.fc1.weight,0)
+        nn.init.constant_(self.fc2.weight,0)
+        nn.init.constant_(self.proj.weight,0)
+    
+    def forward(self,x):
+        x_org = x #[BT, C, H, W]
+        BT, C, H, W = x.shape
+        B = BT // self.num_frames
+        x = x.reshape(B, self.num_frames, C, H, W).transpose(1,2)#[B,C,T,H,W]
+        x = x + self.norm2(self.conv1(self.norm1(x)))
+        x = x + self.fc2(self.act(self.fc1(self.norm3(self.conv2(x)))))#[B,C_adapter,T,H,W]
+        x = self.proj(x).transpose(1,2)#[B,T,C,H,W]
+        x = x.reshape(BT,C,H,W)
+        x = self.scale*x + x_org
+        return x
+
+
 class ResAdapterBlock(nn.Module):
     def __init__(self, original_block, d_model, adapter_channels, kernel_size, num_frames=4, scale=1.0):
         super().__init__()
         self.original_block = original_block
         for _, p in self.original_block.named_parameters():
             p.requires_grad = False
-        self.adapter = AdapterConv(in_channels=d_model,adapter_channels=adapter_channels,kernel_size=kernel_size,num_frames=num_frames,scale=scale)
+        # self.adapter = AdapterConv(in_channels=d_model,adapter_channels=adapter_channels,kernel_size=kernel_size,num_frames=num_frames,scale=scale)
+        self.adapter = RepMixerBlock3D(in_channels=d_model,adapter_channels=adapter_channels,hidden_rate=3,kernel_size=kernel_size,num_frames=num_frames,scale=scale)
 
     def forward(self,x):
         x = self.adapter(x)
@@ -1006,18 +1052,18 @@ class VideoCLIP(nn.Module):
         dims = [64,128,256,512]
         for i, dim in zip(range(len(clip_2d.visual.trunk.stages)),dims):
             for j in range(len(clip_2d.visual.trunk.stages[i].blocks)):
-                clip_2d.visual.trunk.stages[i].blocks[j] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[i].blocks[j],d_model=dim,adapter_channels=dim//2,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
+                clip_2d.visual.trunk.stages[i].blocks[j] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[i].blocks[j],d_model=dim,adapter_channels=dim,kernel_size=(3,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
 
         # clip_2d.visual.trunk.stages[0] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[0],d_model=64,adapter_channels=32,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         # clip_2d.visual.trunk.stages[1] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[1],d_model=64,adapter_channels=32,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         # clip_2d.visual.trunk.stages[2] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[2],in_dim=256,mid_dim=128,use_pos_emb=True,width=16,num_frames=num_frames)
-        clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,width=8,num_frames=num_frames)
+        clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,width=8,use_pos_emb=True,num_frames=num_frames).to(dtype=torch.bfloat16)
         # clip_2d.visual.trunk.stages[3] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[3],d_model=256,adapter_channels=128,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
-        clip_2d.visual.trunk.final_conv = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=512,width=8,num_frames=num_frames)
-        clip_2d.visual.trunk.head = AdaptMLP(original_mlp=clip_2d.visual.trunk.head,in_dim=512,mid_dim=256,s=0.1)
+        clip_2d.visual.trunk.final_conv = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=512,width=8,num_frames=num_frames).to(dtype=torch.bfloat16)
+        clip_2d.visual.trunk.head = AdaptMLP(original_mlp=clip_2d.visual.trunk.head,in_dim=512,mid_dim=256,s=0.1).to(dtype=torch.bfloat16)
         
         for block in clip_2d.text.transformer.resblocks:
-            block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=0.1)
+            block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=0.1).to(dtype=torch.bfloat16)
         
         self.clip_2d = clip_2d
 

@@ -6,15 +6,15 @@ torchrun --nproc_per_node 2 -m \
     --zeroshot-frequency 1 \
     --report-to tensorboard \
     --dataset-type webdataset \
-    --train-data="/workspace/data/MSRVTT-videos/train/{000000..000089}.tar"  \
+    --train-data="/home/alex/data/MSRVTT-videos/train/{000000..000089}.tar"  \
     --train-num-samples 9000 \
-    --val-data="/workspace/data/MSRVTT-videos/test/{000000..000009}.tar"  \
+    --val-data="/home/alex/data/MSRVTT-videos/test/{000000..000009}.tar"  \
     --val-num-samples 1000 \
     --warmup 0 \
-    --batch-size=16 \
-    --lr=5e-4 \
+    --batch-size=8 \
+    --lr=5e-6 \
     --wd=0.2 \
-    --epochs 64 \
+    --epochs 32 \
     --workers=4 \
     --model MobileCLIP-S1 \
     --pretrained datacompdr \
@@ -24,5 +24,5 @@ torchrun --nproc_per_node 2 -m \
     --distill-ckd-alpha 0.0 \
     --distill-temporal-alpha 0.0 \
     --distill-text-fd-alpha 0.0 \
-    --seed 123
+    --precision bf16 \
 
