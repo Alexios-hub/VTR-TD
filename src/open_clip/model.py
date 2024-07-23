@@ -926,6 +926,48 @@ def patchify_feature_map(x):
     
     return patchified_x
 
+class AdaptConv(nn.Module):
+    def __init__(self, original_mlp, in_channels, adapter_channels, kernel_size, padding=True, num_frames=4, scale=0.1):
+        super().__init__()
+        self.original_mlp = original_mlp
+        self.num_frames = num_frames
+        self.scale = scale
+        self.fc1 = nn.Linear(in_channels, adapter_channels)
+        self.conv = nn.Conv3d(
+            adapter_channels, adapter_channels,
+            kernel_size=kernel_size,
+            stride=(1, 1, 1),
+            padding=tuple(x // 2 for x in kernel_size) if padding else(kernel_size[0]//2,0,0),
+            groups=adapter_channels,
+        )
+
+        # self.bn = nn.BatchNorm3d(adapter_channels)
+        # self.act = nn.GELU()
+
+        self.fc2 = nn.Linear(adapter_channels, in_channels)
+        nn.init.constant_(self.conv.weight, 0.)
+        nn.init.constant_(self.conv.bias, 0.)
+        nn.init.constant_(self.fc1.bias, 0.)
+        nn.init.constant_(self.fc2.bias, 0.)
+    
+    def forward(self, x):
+        BT, C, H, W = x.shape
+        B = BT // self.num_frames
+        x_mlp = self.original_mlp(x)
+        x = x.view(B, self.num_frames, C, H, W).permute(0,1,3,4,2).contiguous()#[B,T,H,W,C]
+        x = self.fc1(x)
+        x = x.permute(0,4,1,2,3).contiguous()#[B,C_adapter,T,H,W]
+        x = self.conv(x)
+        
+        # x = self.bn(x)
+        # x = self.act(x)
+
+        x = x.permute(0,2,3,4,1)#[B,T,H,W,C_adapter]
+        x = self.fc2(x)#[B,T,H,W,C]
+        x = x.permute(0,1,4,2,3).contiguous().view(BT,C,H,W)
+        x = self.scale * x + x_mlp
+        return x
+
 class AdapterConv(nn.Module):
 
     def __init__(self, in_channels, adapter_channels, kernel_size, num_frames=4, scale=1.0):
@@ -941,6 +983,8 @@ class AdapterConv(nn.Module):
             groups=adapter_channels,
         )
 
+        # self.bn = nn.BatchNorm3d(adapter_channels)
+        # self.act = nn.GELU()
 
         self.fc2 = nn.Linear(adapter_channels, in_channels)
         nn.init.constant_(self.conv.weight, 0.)
@@ -957,6 +1001,10 @@ class AdapterConv(nn.Module):
         x = self.fc1(x)
         x = x.permute(0,4,1,2,3).contiguous()#[B,C_adapter,T,H,W]
         x = self.conv(x)
+
+        # x = self.bn(x)
+        # x = self.act(x)
+
         x = x.permute(0,2,3,4,1)#[B,T,H,W,C_adapter]
         x = self.fc2(x)#[B,T,H,W,C]
         x = x.permute(0,1,4,2,3).contiguous().view(BT,C,H,W)
@@ -1013,8 +1061,8 @@ class ResAdapterBlock(nn.Module):
         self.original_block = original_block
         for _, p in self.original_block.named_parameters():
             p.requires_grad = False
-        # self.adapter = AdapterConv(in_channels=d_model,adapter_channels=adapter_channels,kernel_size=kernel_size,num_frames=num_frames,scale=scale)
-        self.adapter = RepMixerBlock3D(in_channels=d_model,adapter_channels=adapter_channels,hidden_rate=3,kernel_size=kernel_size,num_frames=num_frames,scale=scale)
+        self.adapter = AdapterConv(in_channels=d_model,adapter_channels=adapter_channels,kernel_size=kernel_size,num_frames=num_frames,scale=scale)
+        # self.adapter = RepMixerBlock3D(in_channels=d_model,adapter_channels=adapter_channels,hidden_rate=3,kernel_size=kernel_size,num_frames=num_frames,scale=scale)
 
     def forward(self,x):
         x = self.adapter(x)
@@ -1049,16 +1097,27 @@ class VideoCLIP(nn.Module):
             param.requires_grad = False
         # clip_2d.logit_scale.requires_grad = False
 
+        # for i in range(1,len(clip_2d.visual.trunk.stem)):
+        #     clip_2d.visual.trunk.stem[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stem[i],d_model=64,adapter_channels=64//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+
+        clip_2d.visual.trunk.stem[1] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[1],in_channels=64,adapter_channels=64//4,kernel_size=(3,1,1),padding=False,num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        clip_2d.visual.trunk.stem[2] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[2],in_channels=64,adapter_channels=64//4,kernel_size=(5,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        
         dims = [64,128,256,512]
         for i, dim in zip(range(len(clip_2d.visual.trunk.stages)),dims):
             for j in range(len(clip_2d.visual.trunk.stages[i].blocks)):
-                clip_2d.visual.trunk.stages[i].blocks[j] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[i].blocks[j],d_model=dim,adapter_channels=dim,kernel_size=(3,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+                clip_2d.visual.trunk.stages[i].blocks[j].token_mixer = AdaptConv(original_mlp=clip_2d.visual.trunk.stages[i].blocks[j].token_mixer,in_channels=dim,adapter_channels=dim//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+                clip_2d.visual.trunk.stages[i].blocks[j].mlp = AdaptConv(original_mlp=clip_2d.visual.trunk.stages[i].blocks[j].mlp,in_channels=dim,adapter_channels=dim//4, kernel_size=(3,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
 
         # clip_2d.visual.trunk.stages[0] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[0],d_model=64,adapter_channels=32,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         # clip_2d.visual.trunk.stages[1] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[1],d_model=64,adapter_channels=32,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         # clip_2d.visual.trunk.stages[2] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[2],in_dim=256,mid_dim=128,use_pos_emb=True,width=16,num_frames=num_frames)
-        clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,width=8,use_pos_emb=True,num_frames=num_frames).to(dtype=torch.bfloat16)
         # clip_2d.visual.trunk.stages[3] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[3],d_model=256,adapter_channels=128,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
+
+        # clip_2d.visual.trunk.stages[0] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[0],in_dim=64,mid_dim=32,width=64,use_pos_emb=True,num_frames=num_frames).to(dtype=torch.bfloat16)
+        # clip_2d.visual.trunk.stages[1] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[1],in_dim=128,mid_dim=64,width=32,num_frames=num_frames).to(dtype=torch.bfloat16)
+        # clip_2d.visual.trunk.stages[2] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[2],in_dim=256,mid_dim=128,use_pos_emb=True,width=16,num_frames=num_frames).to(dtype=torch.bfloat16)
+        clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,width=8,num_frames=num_frames).to(dtype=torch.bfloat16)
         clip_2d.visual.trunk.final_conv = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=512,width=8,num_frames=num_frames).to(dtype=torch.bfloat16)
         clip_2d.visual.trunk.head = AdaptMLP(original_mlp=clip_2d.visual.trunk.head,in_dim=512,mid_dim=256,s=0.1).to(dtype=torch.bfloat16)
         
