@@ -28,6 +28,7 @@ from timm.layers.norm_act import _create_act
 from timm.layers.trace_utils import _assert
 from timm.layers import DropPath, use_fused_attn
 from open_clip.modeling_perceiver_xattn import Perceiver
+from open_clip.transformer import ResidualAttentionBlock
 @dataclass
 class CLIPVisionCfg:
     layers: Union[Tuple[int, int, int, int], int] = 12
@@ -367,16 +368,16 @@ class CustomTextCLIP(nn.Module):
         self.text.set_grad_checkpointing(enable)
 
     def encode_image(self, image, normalize: bool = False):
-        # features, stages_features = self.visual(image)
-        # return (F.normalize(features, dim=-1), stages_features) if normalize else (features, stages_features)
-        features = self.visual(image)
-        return F.normalize(features, dim=-1) if normalize else features
+        features, stages_features = self.visual(image)
+        return (F.normalize(features, dim=-1), stages_features) if normalize else (features, stages_features)
+        # features = self.visual(image)
+        # return F.normalize(features, dim=-1) if normalize else features
 
     def encode_text(self, text, normalize: bool = False):
-        features = self.text(text)
-        # features, tokens = self.text(text)
-        # return (F.normalize(features, dim=-1),tokens) if normalize else (features,tokens)
-        return F.normalize(features, dim=-1) if normalize else features
+        features, tokens = self.text(text)
+        return (F.normalize(features, dim=-1),tokens) if normalize else (features,tokens)
+        # features = self.text(text)
+        # return F.normalize(features, dim=-1) if normalize else features
 
     def get_logits(self, image, text):
         image_features = self.encode_image(image, normalize=True)
@@ -395,15 +396,17 @@ class CustomTextCLIP(nn.Module):
         # image_features, stages_features = self.encode_image(image, normalize=True) if image is not None else None
         # text_features, text_tokens = self.encode_text(text, normalize=True) if text is not None else None
 
-        image_features = self.encode_image(image, normalize=True) if image is not None else None
-        text_features = self.encode_text(text, normalize=True) if text is not None else None
+        # image_features = self.encode_image(image, normalize=True) if image is not None else None
+        # text_features = self.encode_text(text, normalize=True) if text is not None else None
+        image_features, stages_features = self.encode_image(image, normalize=True) if image is not None else None
+        text_features, text_tokens = self.encode_text(text, normalize=True) if text is not None else None
         if self.output_dict:
             out_dict = {
                 "image_features": image_features,
                 "text_features": text_features,
                 "logit_scale": self.logit_scale.exp(),
-                # "stages_features":stages_features,
-                # "text_tokens":text_tokens
+                "stages_features":stages_features,
+                "text_tokens":text_tokens
             }
             if self.logit_bias is not None:
                 out_dict['logit_bias'] = self.logit_bias
@@ -1092,16 +1095,20 @@ class VideoCLIP(nn.Module):
         super().__init__()
         self.num_frames = num_frames
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
+        self.itm_head = nn.Linear(512,2)
+        self.multi_modal_layer = nn.Sequential(ResidualAttentionBlock(d_model=512,n_head=8,mlp_ratio=3.0))
+        self.itm_cls = nn.Parameter(512)
 
         for param in clip_2d.parameters():
             param.requires_grad = False
         # clip_2d.logit_scale.requires_grad = False
 
-        # for i in range(1,len(clip_2d.visual.trunk.stem)):
-        #     clip_2d.visual.trunk.stem[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stem[i],d_model=64,adapter_channels=64//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        # clip_2d.visual.trunk.stem[0] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stem[0],d_model=3,adapter_channels=64//4,kernel_size=(3,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        for i in range(1,len(clip_2d.visual.trunk.stem)):
+            clip_2d.visual.trunk.stem[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stem[i],d_model=64,adapter_channels=64//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
 
-        clip_2d.visual.trunk.stem[1] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[1],in_channels=64,adapter_channels=64//4,kernel_size=(3,1,1),padding=False,num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
-        clip_2d.visual.trunk.stem[2] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[2],in_channels=64,adapter_channels=64//4,kernel_size=(5,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        # clip_2d.visual.trunk.stem[1] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[1],in_channels=64,adapter_channels=64//4,kernel_size=(3,1,1),padding=False,num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        # clip_2d.visual.trunk.stem[2] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[2],in_channels=64,adapter_channels=64//4,kernel_size=(5,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
         
         dims = [64,128,256,512]
         for i, dim in zip(range(len(clip_2d.visual.trunk.stages)),dims):
@@ -1134,6 +1141,7 @@ class VideoCLIP(nn.Module):
     ):
         """
         video:shape=[B,num_frames,C,H,W]
+        text:shape=[B,L,C]
         """
         B,T,C,H,W = video.shape#[B,4,3,224,224]
 
