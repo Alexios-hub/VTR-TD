@@ -609,14 +609,14 @@ def preprocess_sample(args,is_train, sample,preprocess_img,tokenizer):
         # text_idx = random.choice(range(0,len(texts)))
         # text = tokenizer(texts[text_idx])
         assert len(texts) == 1
-        text = tokenizer(texts)[0]
+        text = tokenizer(texts)
     else:
         # text = random.sample(texts,10)
         text = random.choice(texts)
         # if len(texts) < 20:
         #     texts.extend([texts[-1]] * (20 - len(texts)))
         # text = texts
-        text = tokenizer(text)[0]
+        text = tokenizer(text)
 
     # paragraph = ";".join(texts)
     # text = tokenizer(paragraph)[0]

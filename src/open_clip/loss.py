@@ -14,7 +14,7 @@ try:
     import horovod.torch as hvd
 except ImportError:
     hvd = None
-import numpy as np
+
 
 def gather_features(
         image_features,
@@ -233,7 +233,7 @@ class MyOrthogonal(nn.Module):
         return y
     
 
-class VideoClipLoss(ClipLoss):
+class VideoDistillClipLoss(ClipLoss):
 
     def __init__(
             self,
@@ -252,11 +252,73 @@ class VideoClipLoss(ClipLoss):
             world_size,
             use_horovod
         )
+
+    def dist_loss(self, args, dist_features, s_image_features, s_text_features, s_logits_per_image, s_logits_per_text):
+        """
+        Calculate token-wise distillation loss between teacher and student features.
+    
+        Args:
+        dist_features:dict{
+        t_image_feats:[B,T*196,1024]
+        t_pooled_image_feats:[B,T,1024]
+        t_texts_embeds:[B,L,1024]
+        t_pooled_texts_embeds:[B,1024]取的CLS token
+        t_visual_projs:[B,T,768]
+        t_text_projs:[B,768]取的CLS token并投影
+        },
+        s_image_features:[B,T,768],
+        s_video_token_features:[B,T*196,768]
+        s_text_features:[B,768]用一个mlp将冻结的eot token输出特征投影到768
+    
+        Returns:
+        Average KL divergence loss across the batch.
+        """
+
+
+        #ckd loss
+        t_logits_per_image, t_logits_per_text = \
+            self.get_logits(dist_features['t_visual_projs'], dist_features['t_text_projs'], 1.0)
+        
+        ckd_loss = args.distill_ckd_alpha * ((-(t_logits_per_image.softmax(dim=1) * s_logits_per_image.log_softmax(dim=1)).sum(dim=1).mean(dim=0)) + \
+                    -(t_logits_per_text.softmax(dim=1) * s_logits_per_text.log_softmax(dim=1)).sum(dim=1).mean(dim=0)) / 2
+
+        # #temporal_relation_loss
+        # # Compute correlation matrices
+        # t_corr_matrix = torch.bmm(dist_features['t_pooled_image_feats'], dist_features['t_pooled_image_feats'].transpose(1, 2)) / teacher_norm
+        # s_corr_matrix = torch.bmm(s_image_features, s_image_features.transpose(1, 2)) / student_norm
+        # # Apply softmax to get distributions
+        # t_distribution = F.softmax(t_corr_matrix, dim=-1)
+        # s_distribution = F.softmax(s_corr_matrix, dim=-1)
+        # # Normalize by the number of elements in the distribution
+        # t_loss = args.distill_temporal_alpha * F.kl_div(torch.log(t_distribution), s_distribution, reduction='batchmean') / (B)
+
+        # #temporal_relation_loss
+        # # Normalize the features
+        # t_pooled_image_feats_norm = F.normalize(dist_features['t_pooled_image_feats'], dim=-1)
+        # s_image_features_norm = F.normalize(s_image_features, dim=-1)
+        # # Compute correlation matrices
+        # t_corr_matrix = torch.bmm(t_pooled_image_feats_norm, t_pooled_image_feats_norm.transpose(1, 2))
+        # s_corr_matrix = torch.bmm(s_image_features_norm, s_image_features_norm.transpose(1, 2))
+        # # Normalize by the number of elements in the distribution
+        # # t_loss = args.distill_temporal_alpha * F.kl_div(torch.log(t_distribution), s_distribution, reduction='batchmean') / (B)
+        # t_loss = args.distill_temporal_alpha *(-(t_corr_matrix.softmax(dim=-1) * s_corr_matrix.log_softmax(dim=-1)).sum(dim=-1).mean(dim=1).mean(dim=0))
+
+        # t_loss = args.distill_temporal_alpha * F.mse_loss(dist_features['t_visual_projs'], s_image_features)
+
+        #text_fd_loss
+        # text_fd_loss = args.distill_text_fd_alpha * F.mse_loss(s_text_features, dist_features['t_text_projs'])
+
+    
+        return {
+            'ckd_loss':ckd_loss,
+            # 't_loss':t_loss,
+            # 'text_fd_loss':text_fd_loss
+        }
     
 
     def get_logits(self, image_features, text_features, logit_scale):
         """
-        image_features:[B,768]
+        image_features:[B,T,768]
         text_features:[B,768]
         """
         if self.world_size > 1:
@@ -267,23 +329,23 @@ class VideoClipLoss(ClipLoss):
             all_image_features = F.normalize(all_image_features,dim=-1)
             all_text_features = F.normalize(all_text_features,dim=-1)
             if self.local_loss:
-                logits_per_image = logit_scale * image_features @ all_text_features.T
-                logits_per_text = logit_scale * text_features @ all_image_features.T
-                # logits_per_image = logit_scale * torch.einsum('md,nld->mln',image_features,all_text_features)
-                # logits_per_text = logit_scale * torch.einsum('nld,md->nlm',text_features,all_image_features)
+                # logits_per_image = logit_scale * image_features @ all_text_features.T
+                # logits_per_text = logit_scale * text_features @ all_image_features.T
+                logits_per_image = logit_scale * torch.einsum('md,nld->mln',image_features,all_text_features)
+                logits_per_text = logit_scale * torch.einsum('nld,md->nlm',text_features,all_image_features)
             else:
-                logits_per_image = logit_scale * all_image_features @ all_text_features.T
-                logits_per_text = logits_per_image.T
-                # logits_per_image = logit_scale * torch.einsum('md,nld->mln',all_image_features,all_text_features)
-                # logits_per_text = logit_scale * torch.einsum('nld,md->nlm',all_text_features,all_image_features)
+                # logits_per_image = logit_scale * all_image_features @ all_text_features.T
+                # logits_per_text = logits_per_image.T
+                logits_per_image = logit_scale * torch.einsum('md,nld->mln',all_image_features,all_text_features)
+                logits_per_text = logit_scale * torch.einsum('nld,md->nlm',all_text_features,all_image_features)
                 # logits_per_text = logits_per_image.T
         else:
             image_features = F.normalize(image_features,dim=-1)
             text_features = F.normalize(text_features,dim=-1)
-            logits_per_image = logit_scale * image_features @ text_features.T
-            logits_per_text = logit_scale * text_features @ image_features.T
-            # logits_per_image = logit_scale * torch.einsum('md,nld->mln',image_features,text_features)
-            # logits_per_text = logit_scale * torch.einsum('nld,md->nlm',text_features,image_features)
+            # logits_per_image = logit_scale * image_features @ text_features.T
+            # logits_per_text = logit_scale * text_features @ image_features.T
+            logits_per_image = logit_scale * torch.einsum('md,nld->mln',image_features,text_features)
+            logits_per_text = logit_scale * torch.einsum('nld,md->nlm',text_features,image_features)
 
         
         return logits_per_image, logits_per_text
@@ -291,11 +353,7 @@ class VideoClipLoss(ClipLoss):
 
     def forward(
             self,
-
-            stages_features,
-            text_tokens,
-            vtm_loss,
-
+            args,
             image_features,#[B,512]
             text_features,
             logit_scale,
@@ -308,28 +366,26 @@ class VideoClipLoss(ClipLoss):
 
         labels = self.get_ground_truth(image_features.device, logits_per_image.shape[0])
 
-        contrastive_loss = (
-            F.cross_entropy(logits_per_image, labels) +
-            F.cross_entropy(logits_per_text, labels)
-        ) / 2
+        # contrastive_loss = (
+        #     F.cross_entropy(logits_per_image, labels) +
+        #     F.cross_entropy(logits_per_text, labels)
+        # ) / 2
 
-        # contrastive_loss = sum([(
-        #     F.cross_entropy(logits_per_image[:,i,:].squeeze(), labels) +
-        #     F.cross_entropy(logits_per_text[:,i,:].squeeze(), labels)
-        # ) / 2 for i in range(logits_per_image.shape[1])])/logits_per_image.shape[1]
+        contrastive_loss = sum([(
+            F.cross_entropy(logits_per_image[:,i,:].squeeze(), labels) +
+            F.cross_entropy(logits_per_text[:,i,:].squeeze(), labels)
+        ) / 2 for i in range(logits_per_image.shape[1])])/logits_per_image.shape[1]
+
+        # distill_loss = self.dist_loss(args=args, dist_features=dist_features,s_image_features=image_features,\
+        #                               s_text_features=text_features,s_logits_per_image=logits_per_image,s_logits_per_text=logits_per_text)
 
         if output_dict:
             output = {"contrastive_loss": contrastive_loss}
             # output.update(distill_loss)
-            output.update({
-                'vtm_loss':vtm_loss
-            })
             return output
 
         else:
             raise NotImplementedError('output_dict must be True')
-
-
 
 def neighbour_exchange(from_rank, to_rank, tensor, group=None):
     tensor_recv = torch.zeros_like(tensor)

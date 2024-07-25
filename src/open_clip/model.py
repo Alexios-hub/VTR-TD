@@ -28,7 +28,6 @@ from timm.layers.norm_act import _create_act
 from timm.layers.trace_utils import _assert
 from timm.layers import DropPath, use_fused_attn
 from open_clip.modeling_perceiver_xattn import Perceiver
-from open_clip.transformer import ResidualAttentionBlock
 @dataclass
 class CLIPVisionCfg:
     layers: Union[Tuple[int, int, int, int], int] = 12
@@ -368,16 +367,16 @@ class CustomTextCLIP(nn.Module):
         self.text.set_grad_checkpointing(enable)
 
     def encode_image(self, image, normalize: bool = False):
-        features, stages_features = self.visual(image)
-        return (F.normalize(features, dim=-1), stages_features) if normalize else (features, stages_features)
-        # features = self.visual(image)
-        # return F.normalize(features, dim=-1) if normalize else features
+        # features, stages_features = self.visual(image)
+        # return (F.normalize(features, dim=-1), stages_features) if normalize else (features, stages_features)
+        features = self.visual(image)
+        return F.normalize(features, dim=-1) if normalize else features
 
     def encode_text(self, text, normalize: bool = False):
-        features, tokens = self.text(text)
-        return (F.normalize(features, dim=-1),tokens) if normalize else (features,tokens)
-        # features = self.text(text)
-        # return F.normalize(features, dim=-1) if normalize else features
+        features = self.text(text)
+        # features, tokens = self.text(text)
+        # return (F.normalize(features, dim=-1),tokens) if normalize else (features,tokens)
+        return F.normalize(features, dim=-1) if normalize else features
 
     def get_logits(self, image, text):
         image_features = self.encode_image(image, normalize=True)
@@ -396,17 +395,15 @@ class CustomTextCLIP(nn.Module):
         # image_features, stages_features = self.encode_image(image, normalize=True) if image is not None else None
         # text_features, text_tokens = self.encode_text(text, normalize=True) if text is not None else None
 
-        # image_features = self.encode_image(image, normalize=True) if image is not None else None
-        # text_features = self.encode_text(text, normalize=True) if text is not None else None
-        image_features, stages_features = self.encode_image(image, normalize=True) if image is not None else None
-        text_features, text_tokens = self.encode_text(text, normalize=True) if text is not None else None
+        image_features = self.encode_image(image, normalize=True) if image is not None else None
+        text_features = self.encode_text(text, normalize=True) if text is not None else None
         if self.output_dict:
             out_dict = {
                 "image_features": image_features,
                 "text_features": text_features,
                 "logit_scale": self.logit_scale.exp(),
-                "stages_features":stages_features,
-                "text_tokens":text_tokens
+                # "stages_features":stages_features,
+                # "text_tokens":text_tokens
             }
             if self.logit_bias is not None:
                 out_dict['logit_bias'] = self.logit_bias
@@ -1095,20 +1092,16 @@ class VideoCLIP(nn.Module):
         super().__init__()
         self.num_frames = num_frames
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
-        self.itm_head = nn.Linear(512,2)
-        self.multimodal_fuse_layer = nn.ModuleList([ResidualAttentionBlock(d_model=512,n_head=8,mlp_ratio=3.0)])
-        self.itm_cls = nn.Parameter(torch.randn(512))
 
         for param in clip_2d.parameters():
             param.requires_grad = False
         # clip_2d.logit_scale.requires_grad = False
 
-        # clip_2d.visual.trunk.stem[0] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stem[0],d_model=3,adapter_channels=64//4,kernel_size=(3,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
-        for i in range(1,len(clip_2d.visual.trunk.stem)):
-            clip_2d.visual.trunk.stem[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stem[i],d_model=64,adapter_channels=64//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        # for i in range(1,len(clip_2d.visual.trunk.stem)):
+        #     clip_2d.visual.trunk.stem[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stem[i],d_model=64,adapter_channels=64//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
 
-        # clip_2d.visual.trunk.stem[1] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[1],in_channels=64,adapter_channels=64//4,kernel_size=(3,1,1),padding=False,num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
-        # clip_2d.visual.trunk.stem[2] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[2],in_channels=64,adapter_channels=64//4,kernel_size=(5,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        clip_2d.visual.trunk.stem[1] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[1],in_channels=64,adapter_channels=64//4,kernel_size=(3,1,1),padding=False,num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        clip_2d.visual.trunk.stem[2] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[2],in_channels=64,adapter_channels=64//4,kernel_size=(5,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
         
         dims = [64,128,256,512]
         for i, dim in zip(range(len(clip_2d.visual.trunk.stages)),dims):
@@ -1133,117 +1126,27 @@ class VideoCLIP(nn.Module):
         
         self.clip_2d = clip_2d
 
-    def forward_fuse(self, embedding_output, attn_mask):
-        embedding_output = torch.cat([self.itm_cls.repeat(embedding_output.shape[0],1,1),embedding_output],dim=1)
-        attn_mask = torch.cat([torch.zeros(embedding_output.shape[0],1,dtype=torch.bool,device=attn_mask.device),attn_mask],dim=1)
-        for layer in self.multimodal_fuse_layer:
-            embedding_output = layer(
-                embedding_output,
-                attn_mask
-            )
-        output = embedding_output
-        score = self.itm_head(output[:, 0, :])
-        return score
-        
-    def compute_vtm(
-        self,text, text_features, image_features, sim_i2t, sim_t2i
-    ):
 
-        image_atts = torch.zeros(image_features.shape[:2],dtype=torch.bool,device=image_features.device)
-        text_atts = (text == 0).to(text.device)
-        
-        # ====== positive pairs =======
-        attention_mask = torch.cat([text_atts, image_atts], dim=1)
-        embedding_output_pos = torch.cat([text_features, image_features], dim=1)
-        logits_pos = self.forward_fuse(embedding_output_pos,attention_mask)
-
-        # ====== negative pairs =======
-        bs = text_features.shape[0]
-
-
-        with torch.no_grad():
-            weights_v2t = sim_i2t
-            weights_t2v = sim_t2i
-            # never select self as negative
-            weights_v2t.fill_diagonal_(-np.Inf)
-            weights_t2v.fill_diagonal_(-np.Inf)
-
-            weights_v2t = F.softmax(weights_v2t, dim=1)
-            weights_t2v = F.softmax(weights_t2v, dim=1)
-
-        # select a negative image for each text
-        # FIXME to optimize using indexing operations
-        image_embeds_neg = []
-        for b in range(bs):
-            neg_idx = torch.multinomial(weights_t2v[b], 1).item()
-            image_embeds_neg.append(image_features[neg_idx])
-        image_embeds_neg = torch.stack(image_embeds_neg, dim=0)
-
-        # select a negative text for each image
-        text_embeds_neg = []
-        text_atts_neg = []
-        for b in range(bs):
-            neg_idx = torch.multinomial(weights_v2t[b], 1).item()
-            text_embeds_neg.append(text_features[neg_idx])
-            text_atts_neg.append(text_atts[neg_idx])
-
-        text_embeds_neg = torch.stack(text_embeds_neg, dim=0)
-        text_atts_neg = torch.stack(text_atts_neg, dim=0)
-
-        text_embeds_all = torch.cat([text_features, text_embeds_neg], dim=0)
-        text_atts_all = torch.cat([text_atts, text_atts_neg], dim=0)
-
-        video_embeds_all = torch.cat([image_embeds_neg, image_features], dim=0)
-        video_atts_all = torch.cat([image_atts, image_atts], dim=0)
-
-        attention_mask_all = torch.cat([text_atts_all, video_atts_all], dim=1)#[B,L+N,C]
-        embedding_output_all = torch.cat([text_embeds_all, video_embeds_all], dim=1)#[B,L+N,C]
-
-        # forward negative pairs via cross encoder
-        logits_neg = self.forward_fuse(embedding_output_all,attention_mask_all)
-        vtm_logits = torch.cat([
-            logits_pos,
-            logits_neg
-        ],dim=0)
-
-        vtm_labels = torch.cat(
-            [torch.ones(bs, dtype=torch.long), torch.zeros(2 * bs, dtype=torch.long)],
-            dim=0,
-        ).to(vtm_logits.device)
-
-        vtm_loss = F.cross_entropy(vtm_logits, vtm_labels)
-
-        return vtm_loss
-    
     def forward(
             self,
             video: Optional[torch.Tensor] = None,
             text: Optional[torch.Tensor] = None,
-            fuse=False
     ):
         """
         video:shape=[B,num_frames,C,H,W]
-        text:shape=[B,L,C]
         """
-        if fuse:
-            return self.forward_fuse(video,text)
-        
         B,T,C,H,W = video.shape#[B,4,3,224,224]
 
         video = video.reshape(B*T,C,H,W)
-        # multi_text = False
-        # if len(text.shape) == 3:
-        #     b, n, d = text.shape
-        #     text = text.reshape(b*n,d)
-        #     multi_text = True
+        multi_text = False
+        if len(text.shape) == 3:
+            b, n, d = text.shape
+            text = text.reshape(b*n,d)
+            multi_text = True
 
         out_dict = self.clip_2d(video, text)
-
-        _,d,h,w = out_dict['stages_features'].shape
-        out_dict['stages_features'] = out_dict['stages_features'].reshape(B,T,d,h,w).permute(0,1,3,4,2).reshape(B,T*h*w,d)#[B,T,h,w,d]
-
-        # if multi_text:
-        #     out_dict['text_features'] = out_dict['text_features'].reshape(b,n,-1)
+        if multi_text:
+            out_dict['text_features'] = out_dict['text_features'].reshape(b,n,-1)
 
         out_dict['image_features'] = out_dict['image_features'].view(B,T,-1).mean(dim=1)
 
@@ -1251,13 +1154,6 @@ class VideoCLIP(nn.Module):
         output['image_features'] = F.normalize(out_dict['image_features'],dim=-1)
         output['text_features'] = F.normalize(out_dict['text_features'],dim=-1)
         output['logit_scale'] = self.logit_scale.exp()
-
-        output['stages_features'] = out_dict['stages_features']
-        output['text_tokens'] = out_dict['text_tokens']
-        sim_i2t = output['logit_scale'] * output['image_features'] @ output['text_features'].t()
-        sim_t2i = sim_i2t.t()
-        output['vtm_loss'] = self.compute_vtm(text=text,text_features=output['text_tokens'],image_features=output['stages_features'],sim_i2t=sim_i2t,sim_t2i=sim_t2i)
-
         return output
 
 def convert_weights_to_lp(model: nn.Module, dtype=torch.float16):

@@ -1,4 +1,3 @@
-import datetime
 import json
 import logging
 import math
@@ -303,8 +302,7 @@ def train_video_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler
                     #     t_image_features = dist_model(pixel_values=t_images).last_hidden_state
                     # model_out['dist_features'] = t_features
                     pass
-                
-                losses = loss(**model_out, output_dict=True)
+                losses = loss(**model_out, args=args, output_dict=True)
 
                 total_loss = sum(losses.values())
                 losses["loss"] = total_loss
@@ -578,9 +576,6 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
         cumulative_loss = 0.0
         cumulative_gen_loss = 0.0
         all_image_features, all_text_features = [], []
-        all_text = []
-        all_stages_features = []
-        all_text_tokens = []
         with torch.no_grad():
             for i, batch in enumerate(dataloader):
                 # images, texts, _,_,_,_,_,_ = batch
@@ -588,16 +583,10 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
                 images = images.to(device=device, dtype=input_dtype, non_blocking=True)#
                 texts = texts.to(device=device, non_blocking=True)
 
-                all_text.append(texts.cpu())
-
                 with autocast():
                     model_out = model(images, texts)
                     image_features = model_out["image_features"]#[B,768]
-                    text_features = model_out["text_features"]# [B,768]
-
-                    all_stages_features.append(model_out['stages_features'].cpu())
-                    all_text_tokens.append(model_out['text_tokens'].cpu())
-
+                    text_features = model_out["text_features"].mean(1)# [B,768]
                     logit_scale = model_out["logit_scale"]
                     # features are accumulated in CPU tensors, otherwise GPU memory exhausted quickly
                     # however, system RAM is easily exceeded and compute time becomes problematic
@@ -629,22 +618,11 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
                         logging.info(
                             f"Generative Loss: {cumulative_gen_loss / num_samples:.6f}\t")
 
-            # val_metrics = get_clip_metrics(
-            #     image_features=torch.cat(all_image_features),
-            #     text_features=torch.cat(all_text_features),
-            #     logit_scale=logit_scale.cpu(),
-            # )
-            with torch.no_grad():
-                val_metrics = get_clip_metrics(
-                    model=model,
-                    text=torch.cat(all_text),
-                    image_features=torch.cat(all_image_features),
-                    text_features=torch.cat(all_text_features),
-                    logit_scale=logit_scale.cpu(),
-                    stages_features=torch.cat(all_stages_features),
-                    text_tokens=torch.cat(all_text_tokens),
-                    k_test=20
-                )
+            val_metrics = get_clip_metrics(
+                image_features=torch.cat(all_image_features),
+                text_features=torch.cat(all_text_features),
+                logit_scale=logit_scale.cpu(),
+            )
             loss = cumulative_loss / num_samples
             metrics.update(
                 {**val_metrics, "clip_val_loss": loss.item(), "epoch": epoch, "num_samples": num_samples}
@@ -685,34 +663,12 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
 
     return metrics
 
-# def get_clip_metrics(image_features, text_features, logit_scale):
-#     metrics = {}
-#     logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
-#     # logits_per_image = logit_scale * torch.einsum("mld,nd->mln", image_features, text_features).mean(1).detach().cpu()
-#     logits_per_text = logits_per_image.t().detach().cpu()
-
-#     logits = {"image_to_text": logits_per_image, "text_to_image": logits_per_text}
-#     ground_truth = torch.arange(len(text_features)).view(-1, 1)
-
-#     for name, logit in logits.items():
-#         ranking = torch.argsort(logit, descending=True)
-#         preds = torch.where(ranking == ground_truth)[1]
-#         preds = preds.detach().cpu().numpy()
-#         metrics[f"{name}_mean_rank"] = preds.mean() + 1
-#         metrics[f"{name}_median_rank"] = np.floor(np.median(preds)) + 1
-#         for k in [1, 5, 10]:
-#             metrics[f"{name}_R@{k}"] = np.mean(preds < k)
-
-#     return metrics
-
-
-def get_clip_metrics(model, text, image_features, text_features, logit_scale, stages_features, text_tokens, k_test=50):
+def get_clip_metrics(image_features, text_features, logit_scale):
     metrics = {}
-    # logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
-    # logits_per_text = logits_per_image.t().detach().cpu()
+    logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
+    # logits_per_image = logit_scale * torch.einsum("mld,nd->mln", image_features, text_features).mean(1).detach().cpu()
+    logits_per_text = logits_per_image.t().detach().cpu()
 
-    # logits = {"image_to_text": logits_per_image, "text_to_image": logits_per_text}
-    logits_per_image, logits_per_text = compute_sim_matrix(model,text,image_features,text_features,logit_scale,stages_features,text_tokens,k_test)
     logits = {"image_to_text": logits_per_image, "text_to_image": logits_per_text}
     ground_truth = torch.arange(len(text_features)).view(-1, 1)
 
@@ -727,79 +683,6 @@ def get_clip_metrics(model, text, image_features, text_features, logit_scale, st
 
     return metrics
 
-
-def compute_sim_matrix(model, text, image_features, text_features, logit_scale, stages_features, text_tokens, k_test=50):
-
-    logging.info("Computing features for evaluation...")
-    start_time = time.time()
-
-    text_atts = (text == 0)
-
-
-
-    sims_matrix = logit_scale * image_features @ text_features.t()
-    score_matrix_v2t = torch.full(
-        (image_features.shape[0], text_features.shape[0]), -100.0
-    )
-
-    # video-to-text
-    for i, sims in enumerate(
-        sims_matrix
-    ):
-        topk_sim, topk_idx = sims.topk(k=k_test, dim=0)
-
-        video_feats_repeat = (
-            stages_features[i].repeat(k_test, 1, 1)
-        )
-        video_atts_repeat = torch.zeros(
-            video_feats_repeat.size()[:-1], dtype=torch.bool
-        )
-
-        attention_mask = torch.cat([text_atts[topk_idx], video_atts_repeat], dim=1)
-        embedding_output = torch.cat(
-            [text_tokens[topk_idx], video_feats_repeat], dim=1
-        )
-
-        score = model(embedding_output.to(model.device), attention_mask.to(model.device),fuse=True)[:,1].cpu()
-        score_matrix_v2t[i, topk_idx] = (score + topk_sim).float()
-
-    # text-to-video
-    sims_matrix = sims_matrix.t()
-    score_matrix_t2v = torch.full(
-        (text_features.shape[0], image_features.shape[0]), -100.0
-    )
-
-
-    for i, sims in enumerate(
-       sims_matrix
-    ):
-
-        topk_sim, topk_idx = sims.topk(k=k_test, dim=0)
-
-        text_feats_repeat = (
-            text_tokens[i].repeat(k_test, 1, 1)
-        )
-        text_atts_repeat = text_atts[i].repeat(k_test, 1)
-
-        video_atts = torch.zeros(
-            stages_features[topk_idx].size()[:-1], dtype=torch.bool
-        )
-
-        embedding_output = torch.cat(
-            [text_feats_repeat, stages_features[topk_idx]], dim=1
-        )
-        attention_mask = torch.cat([text_atts_repeat, video_atts], dim=1)
-
-        score = model(embedding_output.to(model.device), attention_mask.to(model.device),fuse=True)[:,1].cpu()
-
-        score_matrix_t2v[i, topk_idx] = (score + topk_sim).float()
-
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    logging.info("Evaluation time {}".format(total_time_str))
-
-    return score_matrix_v2t.cpu(), score_matrix_t2v.cpu()
-    
 def maybe_compute_generative_loss(model_out):
     if "logits" in model_out and "labels" in model_out:
         token_logits = model_out["logits"]
