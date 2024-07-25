@@ -1096,8 +1096,8 @@ class VideoCLIP(nn.Module):
         self.num_frames = num_frames
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
         self.itm_head = nn.Linear(512,2)
-        self.multi_modal_layer = nn.Sequential(ResidualAttentionBlock(d_model=512,n_head=8,mlp_ratio=3.0))
-        self.itm_cls = nn.Parameter(512)
+        self.multimodal_fuse_layer = nn.ModuleList([ResidualAttentionBlock(d_model=512,n_head=8,mlp_ratio=3.0)])
+        self.itm_cls = nn.Parameter(torch.randn(512))
 
         for param in clip_2d.parameters():
             param.requires_grad = False
@@ -1133,28 +1133,117 @@ class VideoCLIP(nn.Module):
         
         self.clip_2d = clip_2d
 
+    def forward_fuse(self, embedding_output, attn_mask):
+        embedding_output = torch.cat([self.itm_cls.repeat(embedding_output.shape[0],1,1),embedding_output],dim=1)
+        attn_mask = torch.cat([torch.zeros(embedding_output.shape[0],1,dtype=torch.bool,device=attn_mask.device),attn_mask],dim=1)
+        for layer in self.multimodal_fuse_layer:
+            embedding_output = layer(
+                embedding_output,
+                attn_mask
+            )
+        output = embedding_output
+        score = self.itm_head(output[:, 0, :])
+        return score
+        
+    def compute_vtm(
+        self,text, text_features, image_features, sim_i2t, sim_t2i
+    ):
 
+        image_atts = torch.zeros(image_features.shape[:2],dtype=torch.bool,device=image_features.device)
+        text_atts = (text == 0).to(text.device)
+        
+        # ====== positive pairs =======
+        attention_mask = torch.cat([text_atts, image_atts], dim=1)
+        embedding_output_pos = torch.cat([text_features, image_features], dim=1)
+        logits_pos = self.forward_fuse(embedding_output_pos,attention_mask)
+
+        # ====== negative pairs =======
+        bs = text_features.shape[0]
+
+
+        with torch.no_grad():
+            weights_v2t = sim_i2t
+            weights_t2v = sim_t2i
+            # never select self as negative
+            weights_v2t.fill_diagonal_(-np.Inf)
+            weights_t2v.fill_diagonal_(-np.Inf)
+
+            weights_v2t = F.softmax(weights_v2t, dim=1)
+            weights_t2v = F.softmax(weights_t2v, dim=1)
+
+        # select a negative image for each text
+        # FIXME to optimize using indexing operations
+        image_embeds_neg = []
+        for b in range(bs):
+            neg_idx = torch.multinomial(weights_t2v[b], 1).item()
+            image_embeds_neg.append(image_features[neg_idx])
+        image_embeds_neg = torch.stack(image_embeds_neg, dim=0)
+
+        # select a negative text for each image
+        text_embeds_neg = []
+        text_atts_neg = []
+        for b in range(bs):
+            neg_idx = torch.multinomial(weights_v2t[b], 1).item()
+            text_embeds_neg.append(text_features[neg_idx])
+            text_atts_neg.append(text_atts[neg_idx])
+
+        text_embeds_neg = torch.stack(text_embeds_neg, dim=0)
+        text_atts_neg = torch.stack(text_atts_neg, dim=0)
+
+        text_embeds_all = torch.cat([text_features, text_embeds_neg], dim=0)
+        text_atts_all = torch.cat([text_atts, text_atts_neg], dim=0)
+
+        video_embeds_all = torch.cat([image_embeds_neg, image_features], dim=0)
+        video_atts_all = torch.cat([image_atts, image_atts], dim=0)
+
+        attention_mask_all = torch.cat([text_atts_all, video_atts_all], dim=1)#[B,L+N,C]
+        embedding_output_all = torch.cat([text_embeds_all, video_embeds_all], dim=1)#[B,L+N,C]
+
+        # forward negative pairs via cross encoder
+        logits_neg = self.forward_fuse(embedding_output_all,attention_mask_all)
+        vtm_logits = torch.cat([
+            logits_pos,
+            logits_neg
+        ],dim=0)
+
+        vtm_labels = torch.cat(
+            [torch.ones(bs, dtype=torch.long), torch.zeros(2 * bs, dtype=torch.long)],
+            dim=0,
+        ).to(vtm_logits.device)
+
+        vtm_loss = F.cross_entropy(vtm_logits, vtm_labels)
+
+        return vtm_loss
+    
     def forward(
             self,
             video: Optional[torch.Tensor] = None,
             text: Optional[torch.Tensor] = None,
+            fuse=False
     ):
         """
         video:shape=[B,num_frames,C,H,W]
         text:shape=[B,L,C]
         """
+        if fuse:
+            return self.forward_fuse(video,text)
+        
         B,T,C,H,W = video.shape#[B,4,3,224,224]
 
         video = video.reshape(B*T,C,H,W)
-        multi_text = False
-        if len(text.shape) == 3:
-            b, n, d = text.shape
-            text = text.reshape(b*n,d)
-            multi_text = True
+        # multi_text = False
+        # if len(text.shape) == 3:
+        #     b, n, d = text.shape
+        #     text = text.reshape(b*n,d)
+        #     multi_text = True
 
         out_dict = self.clip_2d(video, text)
-        if multi_text:
-            out_dict['text_features'] = out_dict['text_features'].reshape(b,n,-1)
+
+        _,d,h,w = out_dict['stages_features'].shape
+        out_dict['stages_features'] = out_dict['stages_features'].reshape(B,T,d,h,w).permute(0,1,3,4,2).reshape(B,T*h*w,d)#[B,T,h,w,d]
+
+        # if multi_text:
+        #     out_dict['text_features'] = out_dict['text_features'].reshape(b,n,-1)
 
         out_dict['image_features'] = out_dict['image_features'].view(B,T,-1).mean(dim=1)
 
@@ -1162,6 +1251,13 @@ class VideoCLIP(nn.Module):
         output['image_features'] = F.normalize(out_dict['image_features'],dim=-1)
         output['text_features'] = F.normalize(out_dict['text_features'],dim=-1)
         output['logit_scale'] = self.logit_scale.exp()
+
+        output['stages_features'] = out_dict['stages_features']
+        output['text_tokens'] = out_dict['text_tokens']
+        sim_i2t = output['logit_scale'] * output['image_features'] @ output['text_features'].t()
+        sim_t2i = sim_i2t.t()
+        output['vtm_loss'] = self.compute_vtm(text=text,text_features=output['text_tokens'],image_features=output['stages_features'],sim_i2t=sim_i2t,sim_t2i=sim_t2i)
+
         return output
 
 def convert_weights_to_lp(model: nn.Module, dtype=torch.float16):
