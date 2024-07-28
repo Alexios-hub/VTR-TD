@@ -25,5 +25,3 @@ torchrun --nproc_per_node 2 -m \
     --distill-temporal-alpha 0.0 \
     --distill-text-fd-alpha 0.0 \
     --precision bf16 \
-    --resume /home/alex/data/VTR-TD/src/logs/7_23_best/checkpoints/epoch_63.pt
-
