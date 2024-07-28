@@ -5,10 +5,12 @@ torchrun --nproc_per_node 2 -m \
     --save-frequency 1 \
     --zeroshot-frequency 1 \
     --report-to tensorboard \
-    --dataset-type webdataset \
-    --train-data="/home/alex/data/msvd/train/{000000..000011}.tar::/home/alex/data/msvd/val/000000.tar"  \
+    --dataset-type vtr \
+    --train-data="/home/alex/data/msvd/train_val_dir"  \
+    --train-data-ann="/home/alex/data/msvd/umt_ann/msvd_ret_train_val.json" \
     --train-num-samples 1300 \
-    --val-data="/home/alex/data/msvd/test/{000000..000006}.tar"  \
+    --val-data="/home/alex/data/msvd/test_dir"  \
+    --val-data-ann="/home/alex/data/msvd/umt_ann/msvd_ret_test.json" \
     --val-num-samples 670 \
     --warmup 0 \
     --batch-size=8 \

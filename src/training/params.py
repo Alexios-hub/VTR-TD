@@ -32,6 +32,12 @@ def parse_args(args):
         help="Path to file(s) with training data. When using webdataset, multiple datasources can be combined using the `::` separator.",
     )
     parser.add_argument(
+        "--train-data-ann",
+        type=str,
+        default=None,
+        help="when custom_vtr dataset, used for train ann file"
+    )
+    parser.add_argument(
         "--train-data-upsampling-factors",
         type=str,
         default=None,
@@ -48,6 +54,12 @@ def parse_args(args):
         help="Path to file(s) with validation data",
     )
     parser.add_argument(
+        "--val-data-ann",
+        type=str,
+        default=None,
+        help="when custom_vtr dataset, used for val ann file",
+    )
+    parser.add_argument(
         "--train-num-samples",
         type=int,
         default=None,
@@ -61,7 +73,7 @@ def parse_args(args):
     )
     parser.add_argument(
         "--dataset-type",
-        choices=["webdataset", "csv", "synthetic", "auto"],
+        choices=["webdataset", "csv", "synthetic", "auto", "vtr"],
         default="auto",
         help="Which type of dataset to process."
     )
