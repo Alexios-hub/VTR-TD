@@ -888,7 +888,31 @@ class AdaptParallelAttention(nn.Module):
         output = original_mlp_x + self.scale * x
         return output
 
+class AdaptTextParallelAttention(nn.Module):
+    def __init__(self, original_mlp, in_dim, mid_dim, dropout=0.0, s=0.1):
+        super().__init__()
+        self.original_mlp = original_mlp
+        self.in_dim = in_dim
+        self.mid_dim = mid_dim
+        self.c_fc = nn.Linear(in_dim, mid_dim)
+        self.up_proj = nn.Linear(mid_dim, in_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.scale = s
+        encoder_layer = nn.TransformerEncoderLayer(d_model=mid_dim,nhead=8,dim_feedforward=mid_dim*4,activation=F.gelu,batch_first=True)
+        self.encoder = nn.TransformerEncoder(encoder_layer,num_layers=1)
 
+        #initialization
+        nn.init.kaiming_uniform_(self.c_fc.weight)
+        nn.init.zeros_(self.up_proj.weight)
+        nn.init.zeros_(self.c_fc.bias)
+        nn.init.zeros_(self.up_proj.bias)
+    def forward(self, x):
+        original_mlp_x = self.original_mlp(x)
+        x = self.c_fc(original_mlp_x)
+        x = self.dropout(self.encoder(x))
+        x = self.up_proj(x)
+        output = original_mlp_x + self.scale * x
+        return output
 # class myTemporalTransformer(nn.Module):
 #     def __init__(self, d_model=512, nhead=8, n_layers=3, n_position=4):
 #         super().__init__()
@@ -1097,17 +1121,17 @@ class VideoCLIP(nn.Module):
             param.requires_grad = False
         # clip_2d.logit_scale.requires_grad = False
 
-        # for i in range(1,len(clip_2d.visual.trunk.stem)):
-        #     clip_2d.visual.trunk.stem[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stem[i],d_model=64,adapter_channels=64//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        for i in range(1,len(clip_2d.visual.trunk.stem)):
+            clip_2d.visual.trunk.stem[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stem[i],d_model=64,adapter_channels=64//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
 
-        clip_2d.visual.trunk.stem[1] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[1],in_channels=64,adapter_channels=64//4,kernel_size=(3,1,1),padding=False,num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
-        clip_2d.visual.trunk.stem[2] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[2],in_channels=64,adapter_channels=64//4,kernel_size=(5,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        # clip_2d.visual.trunk.stem[1] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[1],in_channels=64,adapter_channels=64//4,kernel_size=(3,1,1),padding=False,num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        # clip_2d.visual.trunk.stem[2] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[2],in_channels=64,adapter_channels=64//4,kernel_size=(5,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
         
         dims = [64,128,256,512]
         for i, dim in zip(range(len(clip_2d.visual.trunk.stages)),dims):
             for j in range(len(clip_2d.visual.trunk.stages[i].blocks)):
                 clip_2d.visual.trunk.stages[i].blocks[j].token_mixer = AdaptConv(original_mlp=clip_2d.visual.trunk.stages[i].blocks[j].token_mixer,in_channels=dim,adapter_channels=dim//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
-                clip_2d.visual.trunk.stages[i].blocks[j].mlp = AdaptConv(original_mlp=clip_2d.visual.trunk.stages[i].blocks[j].mlp,in_channels=dim,adapter_channels=dim//4, kernel_size=(3,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+                clip_2d.visual.trunk.stages[i].blocks[j].mlp = AdaptConv(original_mlp=clip_2d.visual.trunk.stages[i].blocks[j].mlp,in_channels=dim,adapter_channels=dim//4, kernel_size=(3,3,3),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
 
         # clip_2d.visual.trunk.stages[0] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[0],d_model=64,adapter_channels=32,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         # clip_2d.visual.trunk.stages[1] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[1],d_model=64,adapter_channels=32,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
@@ -1123,6 +1147,9 @@ class VideoCLIP(nn.Module):
         
         for block in clip_2d.text.transformer.resblocks:
             block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=0.1).to(dtype=torch.bfloat16)
+            # block.mlp = AdaptTextParallelAttention(original_mlp=block.mlp,in_dim=512,mid_dim=256).to(dtype=torch.bfloat16)
+
+
         
         self.clip_2d = clip_2d
 

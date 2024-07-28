@@ -605,17 +605,34 @@ def preprocess_sample(args,is_train, sample,preprocess_img,tokenizer):
     images_input = preprocess_img(frames)
     texts = sample['texts']
 
+    # For MSRVTT
+    # if not is_train:
+    #     # text_idx = random.choice(range(0,len(texts)))
+    #     # text = tokenizer(texts[text_idx])
+    #     assert len(texts) == 1
+    #     text = tokenizer(texts)
+    # else:
+    #     # text = random.sample(texts,10)
+    #     text = random.choice(texts)
+    #     # if len(texts) < 20:
+    #     #     texts.extend([texts[-1]] * (20 - len(texts)))
+    #     # text = texts
+    #     text = tokenizer(text)
+
+    # For didemo and ActivityNet
+    # if not is_train:
+    #     text = tokenizer(";".join(texts))
+    # else:
+    #     text = random.choice(texts)
+    #     text = tokenizer(text)
+
+    #For msvd
     if not is_train:
-        # text_idx = random.choice(range(0,len(texts)))
-        # text = tokenizer(texts[text_idx])
-        assert len(texts) == 1
-        text = tokenizer(texts)
+        desired_length = 90
+        texts.extend([""] * (desired_length - len(texts)))
+        text = tokenizer(texts)#multi text labels
     else:
-        # text = random.sample(texts,10)
         text = random.choice(texts)
-        # if len(texts) < 20:
-        #     texts.extend([texts[-1]] * (20 - len(texts)))
-        # text = texts
         text = tokenizer(text)
 
     # paragraph = ";".join(texts)

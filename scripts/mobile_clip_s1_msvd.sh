@@ -6,13 +6,13 @@ torchrun --nproc_per_node 2 -m \
     --zeroshot-frequency 1 \
     --report-to tensorboard \
     --dataset-type webdataset \
-    --train-data="/home/alex/data/MSRVTT-videos/train/{000000..000089}.tar"  \
-    --train-num-samples 9000 \
-    --val-data="/home/alex/data/MSRVTT-videos/test/{000000..000009}.tar"  \
-    --val-num-samples 1000 \
+    --train-data="/home/alex/data/msvd/train/{000000..000011}.tar::/home/alex/data/msvd/val/000000.tar"  \
+    --train-num-samples 1300 \
+    --val-data="/home/alex/data/msvd/test/{000000..000006}.tar"  \
+    --val-num-samples 670 \
     --warmup 0 \
     --batch-size=8 \
-    --lr=5e-6 \
+    --lr=5e-4 \
     --wd=0.2 \
     --epochs 128 \
     --workers=4 \
@@ -25,5 +25,3 @@ torchrun --nproc_per_node 2 -m \
     --distill-temporal-alpha 0.0 \
     --distill-text-fd-alpha 0.0 \
     --precision bf16 \
-    --resume /home/alex/data/VTR-TD/src/logs/7_23_best/checkpoints/epoch_63.pt
-
