@@ -557,8 +557,6 @@ class Attention3D(nn.Module):
 
 class ShapedAttention3D(nn.Module):
     """Shaped Multi-headed Self Attention module.
-
-    Source modified from:
     """
     fused_attn: torch.jit.Final[bool]
 
