@@ -589,26 +589,26 @@ def preprocess_sample(args,is_train, sample,preprocess_img,tokenizer):
     # frames, _, _ = read_frames_decord_stream(video_stream=sample['video'],num_frames=4,sample='middle',max_num_frames=-1,trimmed30=False)#frames=[4, 3, 240, 320]
     frames = sample['pth']
     #for MSRVTT and msvd(12 frames)
-    # if frames.shape[0]<12:
-    #     # 需要填充的帧数
-    #     num_frames_to_add = 12 - frames.shape[0]
-    #     # 获取最后一帧
-    #     last_frame = frames[-1].unsqueeze(0)  # 增加一个维度，使其成为[1, C, H, W]
-    #     # 复制最后一帧到需要的数量
-    #     padding_frames = last_frame.repeat(num_frames_to_add, 1, 1, 1)
-    #     # 将原始帧和填充帧拼接
-    #     frames = torch.cat([frames, padding_frames], dim=0)
-    
-    #for didemo and activitynet(32 frames)
-    if frames.shape[0]<32:
+    if frames.shape[0]<12:
         # 需要填充的帧数
-        num_frames_to_add = 32 - frames.shape[0]
+        num_frames_to_add = 12 - frames.shape[0]
         # 获取最后一帧
         last_frame = frames[-1].unsqueeze(0)  # 增加一个维度，使其成为[1, C, H, W]
         # 复制最后一帧到需要的数量
         padding_frames = last_frame.repeat(num_frames_to_add, 1, 1, 1)
         # 将原始帧和填充帧拼接
         frames = torch.cat([frames, padding_frames], dim=0)
+    
+    # #for didemo and activitynet(32 frames)
+    # if frames.shape[0]<32:
+    #     # 需要填充的帧数
+    #     num_frames_to_add = 32 - frames.shape[0]
+    #     # 获取最后一帧
+    #     last_frame = frames[-1].unsqueeze(0)  # 增加一个维度，使其成为[1, C, H, W]
+    #     # 复制最后一帧到需要的数量
+    #     padding_frames = last_frame.repeat(num_frames_to_add, 1, 1, 1)
+    #     # 将原始帧和填充帧拼接
+    #     frames = torch.cat([frames, padding_frames], dim=0)
 
 
     if is_train:
@@ -633,34 +633,25 @@ def preprocess_sample(args,is_train, sample,preprocess_img,tokenizer):
     #     text = tokenizer(text)
 
     # For didemo and ActivityNet
-    if not is_train:
-        text = tokenizer(";".join(texts))
-    else:
-        text = random.choice(texts)
-        text = tokenizer(text)
-
-    # #For msvd
     # if not is_train:
-    #     desired_length = 90
-    #     texts.extend([""] * (desired_length - len(texts)))
-    #     text = tokenizer(texts)#multi text labels
+    #     text = tokenizer(";".join(texts))
     # else:
     #     text = random.choice(texts)
     #     text = tokenizer(text)
 
-    # paragraph = ";".join(texts)
-    # text = tokenizer(paragraph)[0]
-    # t_features = sample['pth']
-    # t_features['t_texts_embeds'] = t_features['t_texts_embeds'][text_idx]
-    # t_features['t_pooled_texts_embeds'] = t_features['t_pooled_texts_embeds'][text_idx]
-    # t_features['t_text_projs'] = t_features['t_text_projs'][text_idx]
+    #For msvd
+    if not is_train:
+        desired_length = 90
+        texts.extend([""] * (desired_length - len(texts)))
+        text = tokenizer(texts)#multi text labels
+    else:
+        text = random.choice(texts)
+        text = tokenizer(text)
+
     return_sample = {
         'video':images_input,
         'text':text
     }
-    # for key in t_features.keys():
-    #     t_features[key] = t_features[key].squeeze()
-    # return_sample.update(t_features)
     
     return return_sample
 
