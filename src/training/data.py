@@ -718,6 +718,7 @@ class VTRDataset(Dataset):
             # caption = self.tokenizer(captions)#multi text labels
 
             #for didemo, acticity dataset
+            frames = self.preprocess_img(frames)
             caption = self.tokenizer(";".join(captions))
         return frames, caption
             
