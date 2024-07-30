@@ -14,3 +14,4 @@ from .tokenizer import SimpleTokenizer, tokenize, decode
 from .transform import image_transform, AugmentationCfg
 from .zero_shot_classifier import build_zero_shot_classifier, build_zero_shot_classifier_legacy
 from .zero_shot_metadata import OPENAI_IMAGENET_TEMPLATES, SIMPLE_IMAGENET_TEMPLATES, IMAGENET_CLASSNAMES
+from .module_ta import TaModuleV1, TaModuleV2

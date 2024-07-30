@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import Tensor, nn
 from torch.utils.checkpoint import checkpoint
 from functools import partial
 
@@ -28,6 +28,8 @@ from timm.layers.norm_act import _create_act
 from timm.layers.trace_utils import _assert
 from timm.layers import DropPath, use_fused_attn
 from open_clip.modeling_perceiver_xattn import Perceiver
+from typing import OrderedDict
+
 @dataclass
 class CLIPVisionCfg:
     layers: Union[Tuple[int, int, int, int], int] = 12
@@ -1091,19 +1093,145 @@ class ResAdapterBlock(nn.Module):
         x = self.original_block(x)
         return x
 
-class PostResAdapterBlock(nn.Module):
-    def __init__(self, original_block, d_model, adapter_channels, kernel_size, num_frames=4, scale=1.0):
+class AdapterTransBlock(nn.Module):
+    def __init__(self, d_model: int, n_head: int, attn_type=None):
         super().__init__()
-        self.original_block = original_block
-        for _, p in self.original_block.named_parameters():
-            p.requires_grad = False
-        self.adapter = AdapterConv(in_channels=d_model,adapter_channels=adapter_channels,kernel_size=kernel_size,num_frames=num_frames,scale=scale)
+        self.attn = nn.MultiheadAttention(d_model, n_head)
+        self.ln_1 = LayerNorm(d_model)
+        self.mlp = nn.Sequential(OrderedDict([
+            ("c_fc", nn.Linear(d_model, d_model * 4)),
+            ("gelu", QuickGELU()),
+            ("c_proj", nn.Linear(d_model * 4, d_model))
+        ]))
+        self.ln_2 = LayerNorm(d_model)
+        self.attn_type = attn_type
 
-    def forward(self,x):
-        x = self.original_block(x)
-        x = self.adapter(x)
+    def make_attn_mask(self, x):
+        attn_mask = None
+        if self.attn_type == 'uni':
+            attn_mask = torch.zeros(x.size(0), x.size(0)).to(x.device)
+            attn_mask.fill_(float("-inf"))
+            attn_mask.triu_(1)  # zero out the lower diagonal
+        return attn_mask
+
+    def forward(self, x, attn_mask=None):
+        if attn_mask is None:
+            attn_mask = self.make_attn_mask(x)
+        
+        ln_x = self.ln_1(x)
+        x = x + self.attn(ln_x, ln_x, ln_x, need_weights=False, attn_mask=attn_mask)[0]
+        x = x + self.mlp(self.ln_2(x))
         return x
-     
+    
+class TextTransfAdapter(nn.Module):
+    def __init__(
+        self, original_block, embed_dim=512, mid_dim=64, n_head=2, idx=-1,
+        attn_type=None, scale=0.1, pos=None, seq_len=12,
+        pca=False, **kwargs
+    ) -> None:
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.mid_dim = mid_dim
+        self.n_head = n_head
+        self.idx = idx
+        self.up_share, self.down_share = False, False
+
+        self.pca = pca
+        self.original_block = original_block
+        if pca:
+            def pca_down(x):
+                seq_len, bs, _ =  x.shape
+                group_dim = int(embed_dim // mid_dim)
+                assert group_dim * mid_dim == embed_dim
+                x = x.permute(1, 0, 2)
+                x = x.reshape(bs, seq_len, mid_dim, group_dim)   # bs * seq * dim
+                pca_dim = min(*x.shape[-2:], mid_dim)
+                u, s, v = torch.pca_lowrank(x.float(), pca_dim)
+                x_down = torch.matmul(x, v[:, :, :, :1].half()).reshape(bs, seq_len, mid_dim)
+                x_down = x_down.permute(1, 0, 2)
+                return x_down
+            self.down = pca_down
+        else:
+            self.down = nn.Linear(embed_dim, mid_dim)
+        self.c_fc = nn.Linear(mid_dim, embed_dim)
+        self.act = QuickGELU()
+        self.scale = scale
+        self.ln_pre = LayerNorm(mid_dim)
+        self.block = AdapterTransBlock(mid_dim, n_head, attn_type=attn_type)
+        self.positional_embedding = nn.Parameter(torch.randn(seq_len, mid_dim))
+        if pos is not None:
+            self.positional_embedding = nn.Parameter(pos.clone()[:,:mid_dim])
+        else:
+            nn.init.normal_(self.positional_embedding, std=0.01)
+
+        self.ln_in_flag = kwargs.get('lnin', False)
+        if self.ln_in_flag:
+            self.ln_in = LayerNorm(embed_dim)
+    
+        self.modal_dynamic = False
+        if kwargs.get('modal_dynamic', {}):
+            md_cfg = kwargs['modal_dynamic']
+            if idx in md_cfg['adapter_idx']:
+                self.modal_dynamic = True
+                md_idx = md_cfg['adapter_idx'].index(idx)
+                self.shared_factor = md_cfg['factor'](md_idx)
+                self.md_pos = md_cfg['position']
+                if md_cfg['position'] in ['up in', 'down out']:
+                    self.md_proj = nn.Linear(self.shared_factor.shape[0], mid_dim)
+                else:
+                    self.md_proj = nn.Linear(self.shared_factor.shape[0], embed_dim)
+        self.init()    
+        
+    def forward(self, x: Tensor, *args, **kwargs):
+        x_mlp = self.original_block(x)
+
+        if self.ln_in_flag:
+            x = self.ln_in(x)
+
+        down_weight = self.down.weight
+        if self.modal_dynamic and self.md_pos.startswith('down'):
+            factor = self.md_proj(self.shared_factor)
+            if self.md_pos == 'down in':
+                down_weight = torch.einsum('i,oi->oi', factor, down_weight)
+            elif self.md_pos == 'down out':
+                down_weight = torch.einsum('o,oi->oi', factor, down_weight)
+        down = x @ down_weight.T + self.down.bias
+
+        pos_emd = self.positional_embedding[:, None].to(x.dtype)
+        down = down + pos_emd
+        
+        down = self.ln_pre(down)
+
+        down = self.block(down)
+        down = self.act(down)
+        
+        up_weight = self.c_fc.weight
+        if self.modal_dynamic and self.md_pos.startswith('up'):
+            factor = self.md_proj(self.shared_factor)
+            if self.md_pos == 'up in':
+                up_weight = torch.einsum('i,oi->oi', factor, up_weight)
+            elif self.md_pos == 'up out':
+                up_weight = torch.einsum('o,oi->oi', factor, up_weight)
+        up = down @ up_weight.T + self.c_fc.bias
+        delta_x = self.scale * up
+        return delta_x + x_mlp
+
+    def init(self):
+        proj_std = ((2 *self.embed_dim) ** -0.5)
+        attn_std = self.embed_dim ** -0.5
+        fc_std = (2 * self.embed_dim) ** -0.5
+        nn.init.normal_(self.block.attn.in_proj_weight, std=attn_std)
+        nn.init.normal_(self.block.attn.out_proj.weight, std=proj_std)
+        nn.init.normal_(self.block.mlp.c_fc.weight, std=fc_std)
+        nn.init.normal_(self.block.mlp.c_proj.weight, std=proj_std)
+
+        if not self.pca:
+            nn.init.normal_(self.down.weight, std=fc_std)
+            nn.init.zeros_(self.down.bias)
+        nn.init.zeros_(self.c_fc.weight)
+        nn.init.zeros_(self.c_fc.bias)
+
+
 class VideoCLIP(nn.Module):
     def __init__(
             self,
@@ -1144,8 +1272,9 @@ class VideoCLIP(nn.Module):
         clip_2d.visual.trunk.head = AdaptMLP(original_mlp=clip_2d.visual.trunk.head,in_dim=512,mid_dim=256,s=0.1).to(dtype=torch.bfloat16)
         
         for block in clip_2d.text.transformer.resblocks:
-            block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=0.1).to(dtype=torch.bfloat16)
+            # block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=0.1).to(dtype=torch.bfloat16)
             # block.mlp = AdaptTextParallelAttention(original_mlp=block.mlp,in_dim=512,mid_dim=256).to(dtype=torch.bfloat16)
+            block.mlp = TextTransfAdapter(original_block=block.mlp,embed_dim=512,mid_dim=512//4,n_head=2,scale=0.1,seq_len=77)
 
 
         
