@@ -1119,8 +1119,8 @@ class VideoCLIP(nn.Module):
             param.requires_grad = False
         # clip_2d.logit_scale.requires_grad = False
 
-        for i in range(1,len(clip_2d.visual.trunk.stem)):
-            clip_2d.visual.trunk.stem[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stem[i],d_model=64,adapter_channels=64//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+        # for i in range(1,len(clip_2d.visual.trunk.stem)):
+        #     clip_2d.visual.trunk.stem[i] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stem[i],d_model=64,adapter_channels=64//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
 
         # clip_2d.visual.trunk.stem[1] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[1],in_channels=64,adapter_channels=64//4,kernel_size=(3,1,1),padding=False,num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
         # clip_2d.visual.trunk.stem[2] = AdaptConv(original_mlp=clip_2d.visual.trunk.stem[2],in_channels=64,adapter_channels=64//4,kernel_size=(5,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
@@ -1128,8 +1128,8 @@ class VideoCLIP(nn.Module):
         dims = [64,128,256,512]
         for i, dim in zip(range(len(clip_2d.visual.trunk.stages)),dims):
             for j in range(len(clip_2d.visual.trunk.stages[i].blocks)):
-                clip_2d.visual.trunk.stages[i].blocks[j].token_mixer = AdaptConv(original_mlp=clip_2d.visual.trunk.stages[i].blocks[j].token_mixer,in_channels=dim,adapter_channels=dim//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
-                clip_2d.visual.trunk.stages[i].blocks[j].mlp = AdaptConv(original_mlp=clip_2d.visual.trunk.stages[i].blocks[j].mlp,in_channels=dim,adapter_channels=dim//4, kernel_size=(3,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+                # clip_2d.visual.trunk.stages[i].blocks[j].token_mixer = AdaptConv(original_mlp=clip_2d.visual.trunk.stages[i].blocks[j].token_mixer,in_channels=dim,adapter_channels=dim//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
+                clip_2d.visual.trunk.stages[i].blocks[j].mlp = AdaptConv(original_mlp=clip_2d.visual.trunk.stages[i].blocks[j].mlp,in_channels=dim,adapter_channels=dim//4, kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
 
         # clip_2d.visual.trunk.stages[0] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[0],d_model=64,adapter_channels=32,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
         # clip_2d.visual.trunk.stages[1] = ResAdapterBlock(original_block=clip_2d.visual.trunk.stages[1],d_model=64,adapter_channels=32,kernel_size=(3,1,1),num_frames=num_frames,scale=1.0)
