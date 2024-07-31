@@ -619,18 +619,18 @@ def preprocess_sample(args,is_train, sample,preprocess_img,tokenizer):
     texts = sample['texts']
 
     # For MSRVTT
-    # if not is_train:
-    #     # text_idx = random.choice(range(0,len(texts)))
-    #     # text = tokenizer(texts[text_idx])
-    #     assert len(texts) == 1
-    #     text = tokenizer(texts)
-    # else:
-    #     # text = random.sample(texts,10)
-    #     text = random.choice(texts)
-    #     # if len(texts) < 20:
-    #     #     texts.extend([texts[-1]] * (20 - len(texts)))
-    #     # text = texts
-    #     text = tokenizer(text)
+    if not is_train:
+        # text_idx = random.choice(range(0,len(texts)))
+        # text = tokenizer(texts[text_idx])
+        assert len(texts) == 1
+        text = tokenizer(texts)
+    else:
+        # text = random.sample(texts,10)
+        text = random.choice(texts)
+        # if len(texts) < 20:
+        #     texts.extend([texts[-1]] * (20 - len(texts)))
+        # text = texts
+        text = tokenizer(text)
 
     # For didemo and ActivityNet
     # if not is_train:
@@ -640,13 +640,13 @@ def preprocess_sample(args,is_train, sample,preprocess_img,tokenizer):
     #     text = tokenizer(text)
 
     #For msvd
-    if not is_train:
-        desired_length = 90
-        texts.extend([""] * (desired_length - len(texts)))
-        text = tokenizer(texts)#multi text labels
-    else:
-        text = random.choice(texts)
-        text = tokenizer(text)
+    # if not is_train:
+    #     desired_length = 90
+    #     texts.extend([""] * (desired_length - len(texts)))
+    #     text = tokenizer(texts)#multi text labels
+    # else:
+    #     text = random.choice(texts)
+    #     text = tokenizer(text)
 
     return_sample = {
         'video':images_input,
