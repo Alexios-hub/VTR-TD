@@ -232,7 +232,21 @@ class MyOrthogonal(nn.Module):
         y = F.linear(x, P)
         return y
     
+class CrossEn(nn.Module):
+    def __init__(self,):
+        super(CrossEn, self).__init__()
 
+    def forward(self, sim_matrix, label_matrix=None):
+        logpt = F.log_softmax(sim_matrix, dim=-1)
+        if label_matrix is None:
+            logpt = torch.diag(logpt)
+        else:
+            label_matrix = label_matrix / label_matrix.sum(dim=-1, keepdim=True)
+            logpt = label_matrix * logpt
+        nce_loss = -logpt
+        sim_loss = nce_loss.mean()
+        return sim_loss
+    
 class VideoDistillClipLoss(ClipLoss):
 
     def __init__(
@@ -252,6 +266,7 @@ class VideoDistillClipLoss(ClipLoss):
             world_size,
             use_horovod
         )
+        self.crossentropy = CrossEn()
 
     def dist_loss(self, args, dist_features, s_image_features, s_text_features, s_logits_per_image, s_logits_per_text):
         """
@@ -371,16 +386,22 @@ class VideoDistillClipLoss(ClipLoss):
         #     F.cross_entropy(logits_per_text, labels)
         # ) / 2
 
-        contrastive_loss = sum([(
-            F.cross_entropy(logits_per_image[:,i,:].squeeze(), labels) +
-            F.cross_entropy(logits_per_text[:,i,:].squeeze(), labels)
+        # contrastive_loss = sum([(
+        #     F.cross_entropy(logits_per_image[:,i,:].squeeze(), labels) +
+        #     F.cross_entropy(logits_per_text[:,i,:].squeeze(), labels)
+        # ) / 2 for i in range(logits_per_image.shape[1])])/logits_per_image.shape[1]
+
+        crossentropy_loss = sum([(
+            self.crossentropy(logits_per_image[:,i,:].squeeze()) +
+           self.crossentropy(logits_per_text[:,i,:].squeeze())
         ) / 2 for i in range(logits_per_image.shape[1])])/logits_per_image.shape[1]
 
         # distill_loss = self.dist_loss(args=args, dist_features=dist_features,s_image_features=image_features,\
         #                               s_text_features=text_features,s_logits_per_image=logits_per_image,s_logits_per_text=logits_per_text)
 
         if output_dict:
-            output = {"contrastive_loss": contrastive_loss}
+            # output = {"contrastive_loss": contrastive_loss}
+            output = {"crossentropy_loss": crossentropy_loss}
             # output.update(distill_loss)
             return output
 

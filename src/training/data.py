@@ -655,6 +655,74 @@ def preprocess_sample(args,is_train, sample,preprocess_img,tokenizer):
     
     return return_sample
 
+# class VTRDataset(Dataset):
+#     def __init__(self, args, preprocess_img, is_train, tokenizer=None):
+#         self.is_train = is_train
+#         if is_train:
+#             ann_path = args.train_data_ann
+#             self.data_root = args.train_data
+#         else:
+#             ann_path = args.val_data_ann
+#             self.data_root = args.val_data
+#         with open(ann_path,'r') as f:
+#             self.ann = json.load(f)
+#         self.aug = torchvision.transforms.RandAugment()
+#         self.preprocess_img = preprocess_img
+#         self.tokenizer = tokenizer
+
+#     def __len__(self):
+#         return len(self.ann)
+    
+#     def __getitem__(self, idx):
+#         item = self.ann[idx]
+#         video_id = item['video'].split('.')[0]
+
+#         frames_path = os.path.join(self.data_root, video_id + '.frames.pth')
+#         captions_path = os.path.join(self.data_root, video_id + '.captions.json')
+
+#         frames = torch.load(frames_path, map_location=torch.device('cpu'))
+
+#         # for msvd and msrvtt
+#         if frames.shape[0]<12:
+#             # 需要填充的帧数
+#             num_frames_to_add = 12 - frames.shape[0]
+#             # 获取最后一帧
+#             last_frame = frames[-1].unsqueeze(0)  # 增加一个维度，使其成为[1, C, H, W]
+#             # 复制最后一帧到需要的数量
+#             padding_frames = last_frame.repeat(num_frames_to_add, 1, 1, 1)
+#             # 将原始帧和填充帧拼接
+#             frames = torch.cat([frames, padding_frames], dim=0)
+
+#         #for didemo and activitynet
+#         # if frames.shape[0]<32:
+#         #     # 需要填充的帧数
+#         #     num_frames_to_add = 32 - frames.shape[0]
+#         #     # 获取最后一帧
+#         #     last_frame = frames[-1].unsqueeze(0)  # 增加一个维度，使其成为[1, C, H, W]
+#         #     # 复制最后一帧到需要的数量
+#         #     padding_frames = last_frame.repeat(num_frames_to_add, 1, 1, 1)
+#         #     # 将原始帧和填充帧拼接
+#         #     frames = torch.cat([frames, padding_frames], dim=0)
+
+#         with open(captions_path,'r') as f:
+#             captions = json.load(f)
+        
+#         if self.is_train:
+#             frames = self.preprocess_img(self.aug(frames))
+#             caption = self.tokenizer(random.choice(captions))
+#         else:
+#             #for msvd dataset
+#             frames = self.preprocess_img(frames)
+#             desired_length = 90
+#             captions.extend([""] * (desired_length - len(captions)))
+#             caption = self.tokenizer(captions)#multi text labels
+
+#             #for didemo, acticity dataset
+#             # frames = self.preprocess_img(frames)
+#             # caption = self.tokenizer(";".join(captions))
+#         return frames, caption
+
+# for msvd
 class VTRDataset(Dataset):
     def __init__(self, args, preprocess_img, is_train, tokenizer=None):
         self.is_train = is_train
@@ -678,8 +746,7 @@ class VTRDataset(Dataset):
         video_id = item['video'].split('.')[0]
 
         frames_path = os.path.join(self.data_root, video_id + '.frames.pth')
-        captions_path = os.path.join(self.data_root, video_id + '.captions.json')
-
+        caption = item['caption']
         frames = torch.load(frames_path, map_location=torch.device('cpu'))
 
         # for msvd and msrvtt
@@ -693,35 +760,19 @@ class VTRDataset(Dataset):
             # 将原始帧和填充帧拼接
             frames = torch.cat([frames, padding_frames], dim=0)
 
-        #for didemo and activitynet
-        # if frames.shape[0]<32:
-        #     # 需要填充的帧数
-        #     num_frames_to_add = 32 - frames.shape[0]
-        #     # 获取最后一帧
-        #     last_frame = frames[-1].unsqueeze(0)  # 增加一个维度，使其成为[1, C, H, W]
-        #     # 复制最后一帧到需要的数量
-        #     padding_frames = last_frame.repeat(num_frames_to_add, 1, 1, 1)
-        #     # 将原始帧和填充帧拼接
-        #     frames = torch.cat([frames, padding_frames], dim=0)
-
-        with open(captions_path,'r') as f:
-            captions = json.load(f)
         
         if self.is_train:
             frames = self.preprocess_img(self.aug(frames))
-            caption = self.tokenizer(random.choice(captions))
+            caption = self.tokenizer(caption)
         else:
-            #for msvd dataset
+            #for msvd dataset eval
             frames = self.preprocess_img(frames)
             desired_length = 90
-            captions.extend([""] * (desired_length - len(captions)))
-            caption = self.tokenizer(captions)#multi text labels
+            caption.extend([""] * (desired_length - len(caption)))
+            caption = self.tokenizer(caption)#multi text labels
 
-            #for didemo, acticity dataset
-            # frames = self.preprocess_img(frames)
-            # caption = self.tokenizer(";".join(captions))
         return frames, caption
-            
+
 def get_vtr_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
     dataset = VTRDataset(
         args=args,

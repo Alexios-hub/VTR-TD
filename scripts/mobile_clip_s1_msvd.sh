@@ -7,11 +7,9 @@ torchrun --nproc_per_node 2 -m \
     --report-to tensorboard \
     --dataset-type vtr \
     --train-data="/home/alex/data/msvd/train_val_dir"  \
-    --train-data-ann="/home/alex/data/msvd/umt_ann/msvd_ret_train_val.json" \
-    --train-num-samples 1300 \
+    --train-data-ann="/home/alex/data/msvd/ann/train_val.json" \
     --val-data="/home/alex/data/msvd/test_dir"  \
     --val-data-ann="/home/alex/data/msvd/umt_ann/msvd_ret_test.json" \
-    --val-num-samples 670 \
     --warmup 0 \
     --batch-size=8 \
     --lr=5e-4 \
