@@ -1466,8 +1466,8 @@ class VideoCLIP(nn.Module):
                 clip_2d.visual.trunk.stages[i].blocks[j].token_mixer = AdaptConv(original_mlp=clip_2d.visual.trunk.stages[i].blocks[j].token_mixer,in_channels=dim,adapter_channels=dim//4,kernel_size=(7,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
                 clip_2d.visual.trunk.stages[i].blocks[j].mlp = AdaptConv(original_mlp=clip_2d.visual.trunk.stages[i].blocks[j].mlp,in_channels=dim,adapter_channels=dim//4, kernel_size=(3,1,1),num_frames=num_frames,scale=0.1).to(dtype=torch.bfloat16)
 
-        clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=512//4,use_pos_emb=True,width=8,num_frames=num_frames).to(dtype=torch.bfloat16)
-        clip_2d.visual.trunk.final_conv = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=1024//4,width=8,num_frames=num_frames).to(dtype=torch.bfloat16)
+        clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=256,use_pos_emb=True,width=8,num_frames=num_frames).to(dtype=torch.bfloat16)
+        clip_2d.visual.trunk.final_conv = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=512,width=8,num_frames=num_frames).to(dtype=torch.bfloat16)
         clip_2d.visual.trunk.head = AdaptMLP(original_mlp=clip_2d.visual.trunk.head,in_dim=512,mid_dim=256,s=0.1).to(dtype=torch.bfloat16)
         
         for block in clip_2d.text.transformer.resblocks:
