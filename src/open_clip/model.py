@@ -1468,10 +1468,10 @@ class VideoCLIP(nn.Module):
 
         clip_2d.visual.trunk.stages[3] = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.stages[3],in_dim=512,mid_dim=512//4,use_pos_emb=True,width=8,num_frames=num_frames).to(dtype=torch.bfloat16)
         clip_2d.visual.trunk.final_conv = AdaptParallelAttention(original_mlp=clip_2d.visual.trunk.final_conv,in_dim=1024,mid_dim=1024//4,width=8,num_frames=num_frames).to(dtype=torch.bfloat16)
-        clip_2d.visual.trunk.head = AdaptMLP(original_mlp=clip_2d.visual.trunk.head,in_dim=512,mid_dim=512//4,s=0.1).to(dtype=torch.bfloat16)
+        clip_2d.visual.trunk.head = AdaptMLP(original_mlp=clip_2d.visual.trunk.head,in_dim=512,mid_dim=256,s=0.1).to(dtype=torch.bfloat16)
         
         for block in clip_2d.text.transformer.resblocks:
-            block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=512//4,s=0.1).to(dtype=torch.bfloat16)
+            block.mlp = AdaptMLP(original_mlp=block.mlp,in_dim=512,mid_dim=256,s=0.1).to(dtype=torch.bfloat16)
             # block.mlp = AdaptTextParallelAttention(original_mlp=block.mlp,in_dim=512,mid_dim=256).to(dtype=torch.bfloat16)
             # block.mlp = TextTransfAdapter(original_block=block.mlp,embed_dim=512,mid_dim=512//4,n_head=2,scale=0.1,seq_len=77)
 
